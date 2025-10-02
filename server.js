@@ -9,15 +9,17 @@ import OpenAI from 'openai';
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB
 
-// CORS con allowlist per deploy su Render
+// CORS con allowlist per deploy su Render (gestisce anche preflight)
 const allowlist = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-app.use(cors({
+const corsOptions = {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);           // curl/postman
     if (!allowlist.length) return cb(null, true); // dev fallback
     return cb(null, allowlist.includes(origin));
   }
-}));
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 
 const PORT = process.env.PORT || 8787;
