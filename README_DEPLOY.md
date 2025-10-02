@@ -18,6 +18,14 @@
 - `SERVER_API_KEY` (consigliata)
 - `ALLOWED_ORIGINS` (es. dominio GitHub Pages/dominio custom, separati da virgole)
 
+### Uso con OpenRouter (alternativa a OpenAI)
+- Imposta:
+  - `OPENAI_BASE_URL=https://openrouter.ai/api/v1`
+  - `OPENAI_API_KEY=sk-or-v1-...` (chiave OpenRouter)
+  - `OPENAI_MODEL=openrouter/auto` (o per vendor specifico es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`)
+- Lascia vuoto `OPENAI_PROJECT` (non serve con OpenRouter)
+- (Facoltativo) Header consigliati da OpenRouter: puoi impostare anche `OPENROUTER_SITE_URL` e `OPENROUTER_APP_TITLE` (non obbligatori)
+
 ## Endpoint test
 - `GET /api/ping` → `{ ok:true, hasOpenAI: true|false }`
 
