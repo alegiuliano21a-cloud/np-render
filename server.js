@@ -121,18 +121,52 @@ function dummyQuiz(text, n=10) {
 /* =============================================================
    PROMPTING
    ============================================================= */
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+async function withBackoff(fn, retries=2){
+  let attempt = 0, delay = 800;
+  while(true){
+    try { return await fn(); }
+    catch(e){
+      const status = e?.status || e?.response?.status;
+      const retryAfter = parseInt(e?.response?.headers?.['retry-after'] || e?.headers?.['retry-after'] || '0', 10);
+      if (status!==429 && status!==503) throw e;
+      if (attempt >= retries) throw e;
+      const wait = retryAfter>0 ? retryAfter*1000 : delay;
+      console.warn(`[openai] Rate limited/status ${status}. Retry in ${wait}ms (attempt ${attempt+1}/${retries})`);
+      await sleep(wait);
+      attempt++; delay *= 2;
+    }
+  }
+}
+
 async function askOpenAI_JSON(system, user, temperature=0.3) {
   if (!HAS_OPENAI) throw new Error("OPENAI non configurato");
-  const resp = await openai.chat.completions.create({
+  const maxTokens = parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
+  const resp = await withBackoff(() => openai.chat.completions.create({
     model: "gpt-4o-mini",
     temperature,
+    max_tokens: maxTokens,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user }
     ]
-  });
+  }));
   const txt = resp.choices?.[0]?.message?.content || "";
   return safeJSON(txt);
+}
+
+/* =============================================================
+   RATE LIMIT SPREAD (ritardi in base alla dimensione del PDF)
+   ============================================================= */
+function computeSpreadDelay(totalChars){
+  // Nessun delay se documento piccolo (<8k char)
+  if (!HAS_OPENAI) return 0;
+  const MIN = 8000, MAX = 50000; // coerente con chunk e truncation
+  const MAX_MS = 120000; // 2 minuti
+  const clamped = Math.max(0, Math.min(MAX, totalChars) - MIN);
+  if (clamped <= 0) return 0;
+  const span = MAX - MIN;
+  return Math.floor((clamped / span) * MAX_MS);
 }
 
 async function buildSummary(text, subject, length) {
@@ -205,13 +239,20 @@ app.post('/api/summary', upload.single('pdf'), async (req,res)=>{
     const length = (req.body.length || 'medio').toLowerCase();
     const text = await extractPdfTextFromReq(req);
     const chunks = chunkText(text, 8000);
+    // Delay complessivo proporzionale alla dimensione; spalmato sui chunk
+    const totalDelay = computeSpreadDelay(text.length);
+    const perChunkDelay = chunks.length ? Math.floor(totalDelay / chunks.length) : 0;
+    if (totalDelay>0) console.log(`[rate-spread] totalDelay=${totalDelay}ms, perChunk=${perChunkDelay}ms, chunks=${chunks.length}`);
     let partials = [];
-    for (let c of chunks) {
+    for (let i=0; i<chunks.length; i++) {
+      const c = chunks[i];
+      if (i>0 && perChunkDelay>0) await sleep(perChunkDelay);
       const r = await buildSummary(c, subject, length);
       partials.push(r.text);
     }
     let finalText = partials.join("\n\n");
     if (partials.length > 1 && HAS_OPENAI) {
+      if (perChunkDelay>0) await sleep(perChunkDelay);
       const r = await buildSummary(finalText, subject, length);
       finalText = r.text;
     }
@@ -227,6 +268,8 @@ app.post('/api/flashcards', upload.single('pdf'), async (req,res)=>{
     const difficulty = (req.body.difficulty || 'media').toLowerCase();
     const n = Math.max(1, Math.min(parseInt(req.body.num || '12', 10), 60));
     const text = await extractPdfTextFromReq(req);
+    const spread = computeSpreadDelay(text.length);
+    if (spread>0) { console.log(`[rate-spread] flashcards delay=${spread}ms`); await sleep(spread); }
     const out = await buildFlashcards(text, subject, n, difficulty);
     res.json({ ok:true, data: out });
   }catch(e){
@@ -240,6 +283,8 @@ app.post('/api/quiz', upload.single('pdf'), async (req,res)=>{
     const difficulty = (req.body.difficulty || 'media').toLowerCase();
     const n = Math.max(1, Math.min(parseInt(req.body.num || '15', 10), 60));
     const text = await extractPdfTextFromReq(req);
+    const spread = computeSpreadDelay(text.length);
+    if (spread>0) { console.log(`[rate-spread] quiz delay=${spread}ms`); await sleep(spread); }
     const out = await buildQuiz(text, subject, n, difficulty);
     // sanifica e limita a n
     const uniq = [];

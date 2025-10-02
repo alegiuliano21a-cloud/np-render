@@ -71,7 +71,14 @@
   </div>
   <!-- Overlay -->
   <div id="overlay" class="overlay">
-    <div class="loader" role="status"><div class="spinner"></div><div class="muted">Elaborazione…</div></div>
+    <div class="loader" role="status">
+      <div class="spinner"></div>
+      <div class="muted" id="overlayMsg">Elaborazione…</div>
+      <div id="overlayEst" style="display:none;width:100%">
+        <div class="muted" id="estText" style="text-align:center;margin-top:4px"></div>
+        <div class="progress" style="margin-top:6px"><i id="estProg" style="width:0%"></i></div>
+      </div>
+    </div>
   </div>
 
   <!-- Topbar fissa -->
@@ -233,6 +240,17 @@
 // ====== DEBUG/CONFIG ======
 const API_BASE = (window.ST_API_BASE || 'http://localhost:8787');
 const API_KEY = window.ST_API_KEY || '';
+function formatMMSS(sec){ const mm=Math.floor(sec/60), ss=sec%60; return mm+":"+(ss<10?("0"+ss):ss); }
+function estimateWaitSecondsFromFile(f){
+  if(!f) return 0;
+  const bytes = f.size || 0; const MB = bytes / (1024*1024);
+  // Mappa 0.5–10 MB → 0–120s (satura sopra 10MB)
+  const minMB = 0.5, maxMB = 10, MAX_S = 120;
+  if (MB <= minMB) return 0;
+  const clamped = Math.min(MB, maxMB) - minMB;
+  const span = maxMB - minMB;
+  return Math.round((clamped/span) * MAX_S);
+}
 console.log('ST DEBUG: API_BASE =', API_BASE);
 if (API_KEY) console.log('ST DEBUG: ST_API_KEY presente: invierò header x-api-key');
 (function ping(){
@@ -396,8 +414,33 @@ async function doGenerate(){
     fd.append('difficulty', document.getElementById('opt_diff').value);
     fd.append('num', document.getElementById('opt_num').value);
   }
-  console.log('ST DEBUG: doGenerate', { section: CURRENT_SECTION, subject: CURRENT_SUBJECT, file: f && f.name, apiBase: API_BASE });
+  console.log('ST DEBUG: doGenerate', { section: CURRENT_SECTION, subject: CURRENT_SUBJECT, file: f && f.name, size: f && f.size, apiBase: API_BASE });
   overlay(true);
+  // Stima attesa e barra completamento
+  const estSec = estimateWaitSecondsFromFile(f);
+  const estBox = document.getElementById('overlayEst');
+  const estText = document.getElementById('estText');
+  const estProg = document.getElementById('estProg');
+  const overlayMsg = document.getElementById('overlayMsg');
+  const defaultOverlayMsg = overlayMsg ? overlayMsg.textContent : '';
+  let estInt = null; let startTs = Date.now();
+  if (estSec > 0) {
+    estBox.style.display = 'block';
+    if (overlayMsg) overlayMsg.textContent = (estSec > 60)
+      ? 'Elaborazione in corso — potrebbe richiedere fino a 2 minuti'
+      : 'Elaborazione…';
+    estText.textContent = 'Attesa stimata: ~' + formatMMSS(estSec);
+    estProg.style.width = '0%';
+    estInt = setInterval(()=>{
+      const elapsed = Math.floor((Date.now()-startTs)/1000);
+      const remain = Math.max(0, estSec - elapsed);
+      estText.textContent = 'Attesa stimata: ~' + formatMMSS(remain);
+      const pct = Math.max(5, Math.min(100, Math.round((elapsed/Math.max(1,estSec))*100)));
+      estProg.style.width = pct + '%';
+    }, 500);
+  } else {
+    estBox.style.display = 'none';
+  }
   try{
     const base = API_BASE;
     const url = CURRENT_SECTION==='riassunti' ? base + '/api/summary' : (CURRENT_SECTION==='flashcards' ? base + '/api/flashcards' : base + '/api/quiz');
@@ -423,7 +466,12 @@ async function doGenerate(){
     }
     renderFolder();
   }catch(e){ toast('Errore: ' + e.message); }
-  finally{ overlay(false); }
+  finally{
+    if (estInt) { clearInterval(estInt); estInt=null; }
+    estProg && (estProg.style.width = '100%');
+    if (overlayMsg) overlayMsg.textContent = defaultOverlayMsg || 'Elaborazione…';
+    overlay(false);
+  }
 }
 
 // bind il pulsante che vive nel DOM corrente della sezione
