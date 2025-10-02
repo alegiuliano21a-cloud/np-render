@@ -87,12 +87,19 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 8787;
-const HAS_OPENAI = !!process.env.OPENAI_API_KEY;
-const openai = HAS_OPENAI ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const apiKeyRaw = process.env.OPENAI_API_KEY || '';
+const apiKey = apiKeyRaw.trim();
+const HAS_OPENAI = !!apiKey;
+const clientOpts = { apiKey };
+if ((process.env.OPENAI_PROJECT||'').trim()) clientOpts.project = (process.env.OPENAI_PROJECT||'').trim();
+if ((process.env.OPENAI_BASE_URL||'').trim()) clientOpts.baseURL = (process.env.OPENAI_BASE_URL||'').trim();
+const openai = HAS_OPENAI ? new OpenAI(clientOpts) : null;
 // Log config effettiva per debug (senza segreti)
 const MODEL_CFG = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const MAX_TOKENS_CFG = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
-console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI}`);
+const KEY_TYPE = apiKey.startsWith('sk-proj-') ? 'project' : (apiKey.startsWith('sk-') ? 'user' : (apiKey ? 'unknown' : 'none'));
+const KEY_LEN = apiKey.length;
+console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI} keyType=${KEY_TYPE} keyLen=${KEY_LEN} project=${process.env.OPENAI_PROJECT? 'set':''} baseURL=${process.env.OPENAI_BASE_URL? 'set':''}`);
 
 /* =============================================================
    AUTH OPZIONALE PER LE ROTTE /api/* (eccetto /api/ping)
@@ -290,10 +297,32 @@ app.get('/api/info', (req,res)=>{
     hasOpenAI: HAS_OPENAI,
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10),
+    project: process.env.OPENAI_PROJECT ? 'set' : '',
+    baseURL: process.env.OPENAI_BASE_URL ? 'set' : '',
+    keyType: KEY_TYPE,
+    keyLen: KEY_LEN,
     rpm: OPENAI_RPM,
     concurrency: OPENAI_CONCURRENCY,
     allowedOrigins: allowlist
   });
+});
+
+// Endpoint diagnostico: verifica chiamata minima a OpenAI
+app.get('/api/debug/openai', async (req,res)=>{
+  try{
+    if (!HAS_OPENAI) return res.status(400).json({ ok:false, error: 'OPENAI_API_KEY mancante' });
+    const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const t0 = Date.now();
+    const r = await openai.chat.completions.create({
+      model: MODEL,
+      max_tokens: 5,
+      messages: [ { role:'system', content:'You are a health check.' }, { role:'user', content:'pong' } ]
+    });
+    return res.json({ ok:true, ms: Date.now()-t0, finish: r.choices?.[0]?.finish_reason || '', created: r.created });
+  }catch(e){
+    const status = e?.status || e?.code || e?.response?.status || 0;
+    return res.status(400).json({ ok:false, status, error: e?.message || String(e) });
+  }
 });
 
 async function extractPdfTextFromReq(req) {
