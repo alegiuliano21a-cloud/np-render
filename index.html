@@ -238,6 +238,9 @@
 
 <!-- Config backend per deploy su Render -->
 <script>
+// Imposta prima la base API per Render (poi viene letta da API_BASE)
+window.ST_API_BASE = window.ST_API_BASE || 'https://np-render.onrender.com';
+
 // ====== DEBUG/CONFIG ======
 const API_BASE = (window.ST_API_BASE || 'http://localhost:8787');
 const API_KEY = window.ST_API_KEY || '';
@@ -261,10 +264,9 @@ if (API_KEY) console.log('ST DEBUG: ST_API_KEY presente: invierò header x-api-k
     .then(js => {
       console.log('ST DEBUG: /api/ping body', js);
       if (js && js.hasOpenAI === false) console.warn('ST DEBUG: hasOpenAI=false — backend in fallback (chiave OpenAI mancante o non letta)');
-    })
-    .catch(err => console.error('ST DEBUG: ping error', err));
+  })
+  .catch(err => console.error('ST DEBUG: ping error', err));
 })();
-  window.ST_API_BASE = 'https://np-render.onrender.com';
 </script>
 
 <script>
