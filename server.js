@@ -141,9 +141,10 @@ async function withBackoff(fn, retries=2){
 
 async function askOpenAI_JSON(system, user, temperature=0.3) {
   if (!HAS_OPENAI) throw new Error("OPENAI non configurato");
-  const maxTokens = parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
+  const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
   const resp = await withBackoff(() => openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: MODEL,
     temperature,
     max_tokens: maxTokens,
     messages: [
