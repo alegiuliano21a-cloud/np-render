@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>StudyTool — PDF → Riassunti, Flashcards, Quiz</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --fg:#101113; --card:#ffffff; --muted:#6b7280;
+    --accent:#0a84ff; --accent-600:#066bd6; --ok:#0a8f3e; --bad:#d43f3a;
+    --shadow:0 8px 30px rgba(16,17,19,0.06); --radius:14px; --maxw:1080px;
+    --btn-bg:#101113; --btn-fg:#fff; --ghost:#e6e6e9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:Inter,-apple-system,system-ui,"Segoe UI",Roboto,Arial}
+  .app{max-width:var(--maxw);margin:0 auto;padding:16px}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;margin-bottom:14px}
+  h1{font-size:1.6rem;margin:0 0 8px}
+  h2{font-size:1.2rem;margin:0}
+  .muted{color:var(--muted)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .col{display:flex;flex-direction:column;gap:10px}
+  button{background:var(--btn-bg);color:var(--btn-fg);border:0;border-radius:12px;padding:12px 14px;font-size:1rem;cursor:pointer}
+  button.secondary{background:#fff;color:var(--fg);border:1px solid var(--ghost)}
+  button.ghost{background:transparent;border:1px dashed var(--ghost);color:var(--fg)}
+  button[disabled]{opacity:.6;cursor:not-allowed}
+  input[type="file"], select, input[type="text"], input[type="number"], textarea{width:100%;padding:12px;border-radius:12px;border:1px solid var(--ghost);font-size:1rem;background:#fff;color:var(--fg)}
+  textarea{min-height:180px}
+  .subjectTag{color:#fff;padding:8px 10px;border-radius:10px;display:inline-block;background:linear-gradient(90deg,var(--accent),var(--accent-600))}
+  .subjectTag.bio{background:linear-gradient(90deg,#2bbf7e,#19a86c)}
+  .subjectTag.phy{background:linear-gradient(90deg,#7a5af8,#5c46d3)}
+  .screen{display:none}
+  .screen.active{display:block}
+  .topbar{display:flex;justify-content:space-between;align-items:center}
+  .toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:999;min-width:280px;max-width:92%}
+  .notice{background:var(--card);box-shadow:var(--shadow);border-radius:12px;padding:10px 12px;display:flex;justify-content:space-between;gap:10px}
+  .overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(6,10,15,.28);backdrop-filter:blur(2px);z-index:998}
+  .loader{width:96px;height:96px;border-radius:16px;background:var(--card);box-shadow:var(--shadow);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;padding:12px}
+  .spinner{width:36px;height:36px;border-radius:50%;border:4px solid #e9eef8;border-top-color:var(--accent);animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pill{display:inline-block;background:#fff;color:#000;border:1px solid var(--ghost);padding:6px 10px;border-radius:999px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  @media (max-width:900px){ .grid3{grid-template-columns:1fr} .grid2{grid-template-columns:1fr} }
+  .item{border:1px solid var(--ghost);border-radius:12px;padding:12px}
+  .folderRow{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px}
+  .folderRow .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .quiz-progress-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:var(--card);box-shadow:var(--shadow);border-radius:14px;padding:12px 18px;min-width:260px;display:none;flex-direction:column;align-items:center;gap:8px;z-index:950}
+  .progress{width:100%;height:10px;background:#f0f2f5;border-radius:999px;overflow:hidden}
+  .progress>i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent-600));transition:width .28s ease}
+  fieldset{border:1px solid #f0f2f5;padding:12px;border-radius:10px;margin:10px 0;background:linear-gradient(180deg,#fff,#fbfdff)}
+  fieldset legend{font-weight:700}
+  label.option{display:flex;gap:12px;align-items:flex-start;padding:9px;border-radius:8px;cursor:pointer}
+  label.option:hover{background:#f7f9fc}
+  .correct{color:var(--ok)} .incorrect{color:var(--bad)} .no-answer{color:var(--muted)}
+  .mono{font-family:ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:.92rem; white-space:pre-wrap}
+  .dark { --bg:#0b0b0d; --fg:#e6e7e9; --card:#0f1113; --muted:#c1c7cd; --btn-bg:#fff; --btn-fg:#0b0b0d; --ghost:#2b2b2b; box-shadow:0 10px 30px rgba(0,0,0,.55) }
+  body.dark{ background: var(--bg); color: var(--fg) }
+  body.dark .card, body.dark .notice, body.dark .loader { background: var(--card); color: var(--fg) }
+  body.dark input, body.dark select, body.dark textarea { background: #fff; color: #000; border:1px solid #e6e6e9 }
+</style>
+</head>
+<body>
+<div class="app" role="application" aria-label="StudyTool">
+  <!-- Toast -->
+  <div id="toast" class="toast" style="display:none">
+    <div class="notice">
+      <div id="toastText"></div>
+      <div><button class="secondary" id="toastBtn">OK</button></div>
+    </div>
+  </div>
+  <!-- Overlay -->
+  <div id="overlay" class="overlay">
+    <div class="loader" role="status"><div class="spinner"></div><div class="muted">Elaborazione…</div></div>
+  </div>
+
+  <!-- Topbar fissa -->
+  <div class="card topbar">
+    <div>
+      <h1>StudyTool</h1>
+      <div class="muted" id="subTitle">Benvenuto 👋</div>
+    </div>
+    <div class="row">
+      <button class="secondary" id="toggleTheme">🌙</button>
+      <button class="secondary" id="goHome" style="display:none">Home</button>
+    </div>
+  </div>
+
+  <!-- Schermate -->
+  <div id="welcome" class="screen active">
+    <div class="card">
+      <h2>Benvenuto</h2>
+      <p class="muted">Carica i tuoi PDF e genera <strong>riassunti</strong>, <strong>flashcards</strong> e <strong>quiz</strong> con un click. Scegli prima la materia.</p>
+      <div class="row"><button id="startBtn">Inizia</button></div>
+    </div>
+  </div>
+
+  <div id="subjects" class="screen">
+    <div class="card">
+      <h2>Scegli la materia</h2>
+      <div class="grid3" style="margin-top:8px">
+        <div class="item">
+          <div class="subjectTag bio">Biologia</div>
+          <p class="muted">Cellule, genetica, fisiologia…</p>
+          <button onclick="enterSubject('Biologia')">Entra</button>
+        </div>
+        <div class="item">
+          <div class="subjectTag">Chimica</div>
+          <p class="muted">Struttura, reazioni, stechiometria…</p>
+          <button onclick="enterSubject('Chimica')">Entra</button>
+        </div>
+        <div class="item">
+          <div class="subjectTag phy">Fisica</div>
+          <p class="muted">Meccanica, termodinamica, onde…</p>
+          <button onclick="enterSubject('Fisica')">Entra</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="subjectHome" class="screen">
+    <div class="card">
+      <h2 id="subjectTitle">Materia</h2>
+      <div class="muted">Ogni materia ha il suo “cloud”: i tuoi contenuti non si mescolano.</div>
+      <div class="grid3" style="margin-top:10px">
+        <div class="item">
+          <h3>Riassunti</h3>
+          <p class="muted">Crea riassunti da PDF, modificabili.</p>
+          <div class="row"><button onclick="enterSection('riassunti')">Vai</button></div>
+        </div>
+        <div class="item">
+          <h3>Flashcards</h3>
+          <p class="muted">Genera mazzi per ripetere, con difficoltà.</p>
+          <div class="row"><button onclick="enterSection('flashcards')">Vai</button></div>
+        </div>
+        <div class="item">
+          <h3>Quiz</h3>
+          <p class="muted">Crea quiz personalizzati da PDF.</p>
+          <div class="row"><button onclick="enterSection('quiz')">Vai</button></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="secondary" onclick="openTraining()">Modalità Allenamento</button>
+        <button class="secondary" onclick="openStats()">Statistiche</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="section" class="screen">
+    <div class="card">
+      <h2 id="sectionTitle">Sezione</h2>
+      <div class="grid2" style="margin-top:10px">
+        <div class="item">
+          <h3>Carica PDF & Genera</h3>
+          <div class="col">
+            <input type="file" id="pdfInput" accept="application/pdf"/>
+            <div id="optionsArea"></div>
+            <div class="row">
+              <button id="genBtn">Genera</button>
+              <button class="secondary" onclick="backToSubject()">Indietro</button>
+            </div>
+            <p class="muted">I risultati andranno nella tua <strong>Cartella</strong> di <span id="folderLabel"></span>.</p>
+          </div>
+        </div>
+        <div class="item">
+          <h3>Cartella — <span id="folderTitle">—</span></h3>
+          <div id="folderList" class="col"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vista Editor Riassunto -->
+  <div id="summaryEditor" class="screen">
+    <div class="card">
+      <h2>Riassunto</h2>
+      <input type="text" id="summaryTitle" placeholder="Titolo"/>
+      <textarea id="summaryText"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="saveSummaryBtn">Salva</button>
+        <button class="secondary" onclick="backToSection()">Indietro</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vista Flashcards -->
+  <div id="flashcardsViewer" class="screen">
+    <div class="card">
+      <h2>Flashcards</h2>
+      <input type="text" id="flashTitle" placeholder="Titolo"/>
+      <div id="flashList" class="col" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="saveFlashBtn">Salva</button>
+        <button class="secondary" onclick="backToSection()">Indietro</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz Runtime & Risultati -->
+  <div id="quizRuntime" class="screen"></div>
+  <div id="quizReview" class="screen"></div>
+  <div id="quizResult" class="screen"></div>
+
+  <!-- Editor Quiz -->
+  <div id="quizEditor" class="screen">
+    <div class="card">
+      <h2>Modifica Quiz</h2>
+      <input type="text" id="quizEditTitle" placeholder="Titolo del quiz"/>
+      <div id="quizEditList" class="col" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="saveQuizEditBtn">Salva</button>
+        <button class="secondary" onclick="backToSection()">Indietro</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Training -->
+  <div id="training" class="screen"></div>
+
+  <!-- Statistiche -->
+  <div id="stats" class="screen"></div>
+
+  <!-- Barra progresso quiz -->
+  <div id="quizBar" class="quiz-progress-bar">
+    <div class="progress"><i id="quizProg" style="width:0%"></i></div>
+    <div class="muted" id="quizTimer">Tempo: 0:00</div>
+  </div>
+</div>
+
+<!-- Config backend per deploy su Render -->
+<script>
+  window.ST_API_BASE = 'https://np-render.onrender.com';
+</script>
+
+<script>
+/* =============================================================
+   STATO APP
+   ============================================================= */
+let CURRENT_SUBJECT = null; // 'Biologia' | 'Chimica' | 'Fisica'
+let CURRENT_SECTION = null; // 'riassunti' | 'flashcards' | 'quiz'
+
+let ACTIVE_SUMMARY = null; // item corrente in editor
+let ACTIVE_FLASH = null;
+let ACTIVE_QUIZ = null; // oggetto quiz in esecuzione
+
+/* =============================================================
+   UTILS E STORAGE
+   ============================================================= */
+function toast(msg){ 
+  const t=document.getElementById('toast'); document.getElementById('toastText').innerHTML = msg; 
+  t.style.display='block'; document.getElementById('toastBtn').onclick=()=>t.style.display='none';
+}
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
+function overlay(on=true){ document.getElementById('overlay').style.display = on?'flex':'none'; }
+function updateSubtitle(){ 
+  const s = CURRENT_SUBJECT ? `Materia: ${CURRENT_SUBJECT}` : 'Benvenuto 👋';
+  document.getElementById('subTitle').textContent = s;
+  document.getElementById('goHome').style.display = CURRENT_SUBJECT ? 'inline-block' : 'none';
+}
+function lsGet(k,d){ try{const v=localStorage.getItem(k); return v?JSON.parse(v):d;}catch(e){return d;} }
+function lsSet(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} }
+
+function cloudKey(subj, sect){ return `st_cloud_${subj}_${sect}`; }
+function statsKey(subj){ return `st_qstats_${subj}`; }
+function resultsKey(subj){ return `st_results_${subj}`; }
+
+function saveToCloud(subj, sect, item){
+  const key = cloudKey(subj, sect);
+  const arr = lsGet(key, []);
+  const idx = arr.findIndex(x => x.id === item.id);
+  if (idx === -1) arr.unshift(item); else arr[idx] = item;
+  lsSet(key, arr);
+}
+function readCloud(subj, sect){ return lsGet(cloudKey(subj,sect), []); }
+function removeFromCloud(subj, sect, id){
+  const arr = readCloud(subj, sect).filter(x => x.id !== id);
+  lsSet(cloudKey(subj, sect), arr);
+}
+
+function qKey(q){ return (q.question||'').trim(); }
+function loadQStats(){ return lsGet(statsKey(CURRENT_SUBJECT), {}); }
+function saveQStats(o){ lsSet(statsKey(CURRENT_SUBJECT), o); }
+function incQAsked(q){ const s=loadQStats(); const k=qKey(q); s[k]=s[k]||{asked:0,wrong:0}; s[k].asked++; saveQStats(s); }
+function incQWrong(q){ const s=loadQStats(); const k=qKey(q); s[k]=s[k]||{asked:0,wrong:0}; s[k].wrong++; saveQStats(s); }
+function resetQWrong(q){ const s=loadQStats(); const k=qKey(q); if(s[k]){ s[k].wrong=0; saveQStats(s); } }
+function getQStat(q){ const s=loadQStats(); return s[qKey(q)] || {asked:0,wrong:0}; }
+function pushResult(obj){
+  const arr = lsGet(resultsKey(CURRENT_SUBJECT), []);
+  arr.unshift(obj); lsSet(resultsKey(CURRENT_SUBJECT), arr);
+}
+
+function uid(){ return Math.random().toString(36).slice(2)+Date.now().toString(36); }
+
+/* =============================================================
+   NAVIGAZIONE
+   ============================================================= */
+document.getElementById('startBtn').onclick = ()=>{ show('subjects'); };
+document.getElementById('toggleTheme').onclick = ()=>{
+  const on = document.body.classList.toggle('dark');
+  localStorage.setItem('st_dark', on ? '1' : '0');
+};
+(function(){ const on = localStorage.getItem('st_dark')==='1'; document.body.classList.toggle('dark', on); })();
+document.getElementById('goHome').onclick = ()=>{ CURRENT_SUBJECT=null; updateSubtitle(); show('subjects'); };
+
+function enterSubject(subj){
+  CURRENT_SUBJECT = subj;
+  document.getElementById('subjectTitle').innerHTML = `${subj} <span class="pill">Cloud separato</span>`;
+  updateSubtitle();
+  show('subjectHome');
+}
+function enterSection(sect){
+  CURRENT_SECTION = sect;
+  document.getElementById('sectionTitle').textContent = `${sect[0].toUpperCase()+sect.slice(1)} — ${CURRENT_SUBJECT}`;
+  document.getElementById('folderTitle').textContent = sect;
+  document.getElementById('folderLabel').textContent = `${CURRENT_SUBJECT} / ${sect}`;
+  renderOptions();
+  renderFolder();
+  show('section');
+}
+function backToSubject(){ show('subjectHome'); }
+function backToSection(){ enterSection(CURRENT_SECTION); }
+updateSubtitle();
+
+/* =============================================================
+   OPZIONI PER SEZIONE
+   ============================================================= */
+function renderOptions(){
+  const div = document.getElementById('optionsArea');
+  if (CURRENT_SECTION === 'riassunti') {
+    div.innerHTML = `
+      <label> Lunghezza
+        <select id="opt_length">
+          <option value="breve">breve</option>
+          <option value="medio" selected>medio</option>
+          <option value="esaustivo">esaustivo</option>
+        </select>
+      </label>
+    `;
+  } else if (CURRENT_SECTION === 'flashcards') {
+    div.innerHTML = `
+      <label> Difficoltà
+        <select id="opt_diff">
+          <option value="facile">facile</option>
+          <option value="media" selected>media</option>
+          <option value="difficile">difficile</option>
+        </select>
+      </label>
+      <label> Numero
+        <input id="opt_num" type="number" min="1" max="60" value="12"/>
+      </label>
+    `;
+  } else {
+    div.innerHTML = `
+      <label> Difficoltà
+        <select id="opt_diff">
+          <option value="facile">facile</option>
+          <option value="media" selected>media</option>
+          <option value="difficile">difficile</option>
+        </select>
+      </label>
+      <label> Numero domande
+        <input id="opt_num" type="number" min="1" max="60" value="15"/>
+      </label>
+    `;
+  }
+}
+
+/* =============================================================
+   GENERAZIONE VIA BACKEND IA
+   ============================================================= */
+async function doGenerate(){
+  const f = document.getElementById('pdfInput').files[0];
+  if(!f){ toast('Seleziona un PDF.'); return; }
+  const fd = new FormData();
+  fd.append('pdf', f);
+  fd.append('subject', CURRENT_SUBJECT);
+  if (CURRENT_SECTION==='riassunti') {
+    fd.append('length', document.getElementById('opt_length').value);
+  } else {
+    fd.append('difficulty', document.getElementById('opt_diff').value);
+    fd.append('num', document.getElementById('opt_num').value);
+  }
+  overlay(true);
+  try{
+    const base = (window.ST_API_BASE || 'http://localhost:8787');
+    const url = CURRENT_SECTION==='riassunti' ? base + '/api/summary' : (CURRENT_SECTION==='flashcards' ? base + '/api/flashcards' : base + '/api/quiz');
+    const res = await fetch(url, { method:'POST', body: fd });
+    const js = await res.json();
+    if(!js.ok){ throw new Error(js.error || 'Errore backend'); }
+    if (CURRENT_SECTION==='riassunti') {
+      const item = { id: uid(), title: f.name.replace(/\.pdf$/i,''), createdAt: new Date().toLocaleString(), type:'summary', data: { length: document.getElementById('opt_length').value, text: js.data.text, source:{ pdfName: f.name } } };
+      saveToCloud(CURRENT_SUBJECT, 'riassunti', item);
+      openSummary(item.id);
+    } else if (CURRENT_SECTION==='flashcards') {
+      const item = { id: uid(), title: f.name.replace(/\.pdf$/i,''), createdAt: new Date().toLocaleString(), type:'flashcards', data: { difficulty: document.getElementById('opt_diff').value, cards: js.data.cards, source:{ pdfName: f.name } } };
+      saveToCloud(CURRENT_SUBJECT, 'flashcards', item);
+      openFlashcards(item.id);
+    } else {
+      const item = { id: uid(), title: f.name.replace(/\.pdf$/i,''), createdAt: new Date().toLocaleString(), type:'quiz', data: { difficulty: document.getElementById('opt_diff').value, questions: js.data.questions, source:{ pdfName: f.name } } };
+      saveToCloud(CURRENT_SUBJECT, 'quiz', item);
+      startQuiz(item.id);
+    }
+    renderFolder();
+  }catch(e){ toast('Errore: ' + e.message); }
+  finally{ overlay(false); }
+}
+
+// bind il pulsante che vive nel DOM corrente della sezione
+document.addEventListener('click', (ev)=>{
+  if(ev.target && ev.target.id==='genBtn'){ doGenerate(); }
+});
+
+/* =============================================================
+   CARTELLA
+   ============================================================= */
+function renderFolder(){
+  const list = document.getElementById('folderList');
+  const arr = readCloud(CURRENT_SUBJECT, CURRENT_SECTION);
+  if (!arr.length){ list.innerHTML = `<p class="muted">Ancora vuoto. Genera un contenuto per vederlo qui.</p>`; return; }
+  list.innerHTML = '';
+  arr.forEach(it => {
+    const div = document.createElement('div');
+    div.className='folderRow';
+    div.innerHTML = `<div><strong>${it.title}</strong><div class="muted" style="font-size:.9rem">📅 ${it.createdAt}</div></div><div class="actions"></div>`;
+    const act = div.querySelector('.actions');
+    const openBtn = document.createElement('button'); openBtn.className='secondary';
+    openBtn.textContent = (CURRENT_SECTION==='riassunti'?'Apri':'Apri');
+    openBtn.onclick = ()=>{
+      if(CURRENT_SECTION==='riassunti') openSummary(it.id);
+      else if(CURRENT_SECTION==='flashcards') openFlashcards(it.id);
+      else startQuiz(it.id);
+    };
+    const renameBtn = document.createElement('button'); renameBtn.className='secondary'; renameBtn.textContent='Rinomina';
+    renameBtn.onclick=()=>{
+      const nv = prompt('Nuovo titolo:', it.title);
+      if(nv && nv.trim()){ it.title = nv.trim(); saveToCloud(CURRENT_SUBJECT, CURRENT_SECTION, it); renderFolder(); }
+    };
+    const delBtn = document.createElement('button'); delBtn.className='ghost'; delBtn.textContent='Elimina';
+    delBtn.onclick=()=>{ if(confirm('Eliminare?')){ removeFromCloud(CURRENT_SUBJECT, CURRENT_SECTION, it.id); renderFolder(); } };
+    const dlBtn = document.createElement('button'); dlBtn.className='secondary'; dlBtn.textContent='Scarica';
+    dlBtn.onclick=()=>{
+      const blob = new Blob([JSON.stringify(it, null, 2)], {type:'application/json'});
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${it.title}_${CURRENT_SECTION}.json`; a.click();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+    };
+    if(CURRENT_SECTION==='quiz'){ 
+      const editBtn=document.createElement('button'); editBtn.className='secondary'; editBtn.textContent='Modifica'; 
+      editBtn.onclick=()=>openQuizEditor(it.id); act.append(openBtn, editBtn, renameBtn, dlBtn, delBtn);
+    } else {
+      act.append(openBtn, renameBtn, dlBtn, delBtn);
+    }
+    list.appendChild(div);
+  });
+}
+
+/* =============================================================
+   EDITOR / VIEW — RIASSUNTI
+   ============================================================= */
+function openSummary(id){
+  const it = readCloud(CURRENT_SUBJECT, 'riassunti').find(x => x.id===id);
+  if(!it){ toast('Elemento non trovato.'); return; }
+  ACTIVE_SUMMARY = it;
+  document.getElementById('summaryTitle').value = it.title;
+  document.getElementById('summaryText').value = it.data.text;
+  document.getElementById('saveSummaryBtn').onclick = ()=>{
+    it.title = document.getElementById('summaryTitle').value || it.title;
+    it.data.text = document.getElementById('summaryText').value || it.data.text;
+    saveToCloud(CURRENT_SUBJECT, 'riassunti', it);
+    toast('Salvato.');
+  };
+  show('summaryEditor');
+}
+
+/* =============================================================
+   EDITOR / VIEW — FLASHCARDS
+   ============================================================= */
+function openFlashcards(id){
+  const it = readCloud(CURRENT_SUBJECT, 'flashcards').find(x => x.id===id);
+  if(!it){ toast('Elemento non trovato.'); return; }
+  ACTIVE_FLASH = it;
+  const titleInp = document.getElementById('flashTitle');
+  const cont = document.getElementById('flashList');
+  const actionBtn = document.getElementById('saveFlashBtn');
+  const controlsRow = actionBtn.parentElement;
+  // Pulsante globale Mostra/Nascondi tutte (creato una sola volta)
+  let toggleAllBtn = document.getElementById('toggleAllFlash');
+  if(!toggleAllBtn){
+    toggleAllBtn = document.createElement('button');
+    toggleAllBtn.id = 'toggleAllFlash';
+    toggleAllBtn.className = 'secondary';
+    controlsRow.insertBefore(toggleAllBtn, actionBtn.nextSibling);
+  }
+
+  // helpers per sicurezza HTML
+  function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function escAttr(s){ return esc(s).replace(/"/g,'&quot;'); }
+
+  function renderView(){
+    titleInp.value = it.title;
+    titleInp.readOnly = true;
+    cont.innerHTML = '';
+    (it.data.cards||[]).forEach((c, idx)=>{
+      const fs = document.createElement('fieldset');
+      fs.innerHTML = `<legend>Carta ${idx+1}</legend>
+        <div><strong>Fronte:</strong> ${esc(c.front)}</div>
+        <div class="muted">Difficoltà: ${esc(c.difficulty||'media')}</div>
+        <div class="mono" data-role="back" style="display:none;margin-top:8px"><strong>Retro:</strong> ${esc(c.back)}</div>
+        <div class="row" style="margin-top:8px"><button class="secondary" data-action="toggle">Mostra risposta</button></div>`;
+      cont.appendChild(fs);
+    });
+    cont.onclick = (ev)=>{
+      const btn = ev.target.closest('button[data-action="toggle"]');
+      if(!btn) return;
+      const fs = btn.closest('fieldset');
+      const back = fs.querySelector('[data-role="back"]');
+      const shown = back.style.display !== 'none';
+      back.style.display = shown ? 'none' : 'block';
+      btn.textContent = shown ? 'Mostra risposta' : 'Nascondi risposta';
+    };
+    // Gestione Mostra/Nascondi tutte
+    function updateToggleAllLabel(){
+      const backs = cont.querySelectorAll('[data-role="back"]');
+      const allVisible = backs.length>0 && Array.from(backs).every(b=>b.style.display !== 'none');
+      toggleAllBtn.textContent = allVisible ? 'Nascondi tutte' : 'Mostra tutte';
+    }
+    toggleAllBtn.style.display = '';
+    toggleAllBtn.onclick = ()=>{
+      const backs = cont.querySelectorAll('[data-role="back"]');
+      const anyHidden = Array.from(backs).some(b=> b.style.display === 'none');
+      backs.forEach(b => { b.style.display = anyHidden ? 'block' : 'none'; });
+      // Aggiorna etichette dei pulsanti per-carta
+      cont.querySelectorAll('button[data-action="toggle"]').forEach(b=>{
+        const fs = b.closest('fieldset');
+        const back = fs.querySelector('[data-role="back"]');
+        const shown = back.style.display !== 'none';
+        b.textContent = shown ? 'Nascondi risposta' : 'Mostra risposta';
+      });
+      updateToggleAllLabel();
+    };
+    updateToggleAllLabel();
+    actionBtn.textContent = 'Modifica';
+    actionBtn.onclick = renderEdit;
+    show('flashcardsViewer');
+  }
+
+  function renderEdit(){
+    titleInp.readOnly = false;
+    cont.innerHTML = '';
+    (it.data.cards||[]).forEach((c, idx)=>{
+      const fs = document.createElement('fieldset');
+      fs.innerHTML = `<legend>Carta ${idx+1}</legend>
+        <label>Fronte <input type="text" value="${escAttr(c.front)}" data-k="front"/></label>
+        <label>Retro <textarea data-k="back">${esc(c.back)}</textarea></label>
+        <label>Difficoltà
+          <select data-k="difficulty">
+            <option ${c.difficulty==='facile'?'selected':''}>facile</option>
+            <option ${(!c.difficulty || c.difficulty==='media')?'selected':''}>media</option>
+            <option ${c.difficulty==='difficile'?'selected':''}>difficile</option>
+          </select>
+        </label>`;
+      cont.appendChild(fs);
+    });
+    actionBtn.textContent = 'Salva';
+    actionBtn.onclick = ()=>{
+      it.title = titleInp.value || it.title;
+      const fs = Array.from(document.querySelectorAll('#flashList fieldset'));
+      it.data.cards = fs.map(fset => {
+        const front = fset.querySelector('[data-k="front"]').value;
+        const back = fset.querySelector('[data-k="back"]').value;
+        const difficulty = fset.querySelector('[data-k="difficulty"]').value;
+        return { front, back, difficulty, tags: [] };
+      });
+      saveToCloud(CURRENT_SUBJECT, 'flashcards', it);
+      toast('Salvato.');
+      renderView();
+    };
+    // Nascondi il pulsante globale in modalità editor
+    toggleAllBtn.style.display = 'none';
+    show('flashcardsViewer');
+  }
+
+  renderView();
+}
+
+/* =============================================================
+   QUIZ: ESECUZIONE, REVIEW, RISULTATI
+   Logica ispirata al file fornito: progresso, timer, qstats, training unico.
+   ============================================================= */
+let QUIZ_TIMER_INT=null, QUIZ_START=null, QUIZ_ELAPSED=0;
+function startQuiz(id){
+  const it = readCloud(CURRENT_SUBJECT, 'quiz').find(x => x.id===id);
+  if(!it){ toast('Quiz non trovato.'); return; }
+  ACTIVE_QUIZ = { id: it.id, title: it.title, questions: shuffle(it.data.questions), subj: CURRENT_SUBJECT };
+  renderQuiz(ACTIVE_QUIZ.questions);
+}
+function shuffle(a){ const b=a.slice(); for(let i=b.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [b[i],b[j]]=[b[j],b[i]];} return b; }
+
+function renderQuiz(questions){
+  let html = `<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2>Quiz — ${CURRENT_SUBJECT}</h2>
+      <div class="muted">Domande: ${questions.length}</div>
+    </div>`;
+  questions.forEach((q,i)=>{
+    const idxs = shuffle([0,1,2,3]);
+    html += `<fieldset><legend>Q${i+1}: ${q.question}</legend>`;
+    idxs.forEach(k => { html += `<label class="option"><input type="radio" name="q${i}" value="${k}"><div>${q.options[k]}</div></label>`; });
+    html += `</fieldset>`;
+  });
+  html += `<div class="row" style="margin-top:8px"><button id="submitQuiz">Termina Quiz</button><button class="secondary" onclick="backToSection()">Annulla</button></div></div>`;
+  const div = document.getElementById('quizRuntime'); div.innerHTML = html; show('quizRuntime');
+  document.getElementById('submitQuiz').onclick = submitQuiz;
+  document.querySelectorAll('#quizRuntime input[type=radio]').forEach(inp => inp.addEventListener('change', updateQuizProgress));
+  document.getElementById('quizBar').style.display='flex';
+  startTimer();
+  updateQuizProgress();
+}
+function startTimer(){
+  QUIZ_START = Date.now(); QUIZ_ELAPSED = 0;
+  function upd(){ const s=Math.floor((Date.now()-QUIZ_START)/1000); const mm=Math.floor(s/60), ss=s%60; document.getElementById('quizTimer').textContent = 'Tempo: '+mm+':' + (ss<10?('0'+ss):ss); }
+  QUIZ_TIMER_INT = setInterval(upd, 500); upd();
+}
+function stopTimer(){
+  if(QUIZ_TIMER_INT){ clearInterval(QUIZ_TIMER_INT); QUIZ_TIMER_INT=null; }
+  if(QUIZ_START){ QUIZ_ELAPSED = Math.floor((Date.now()-QUIZ_START)/1000); } else QUIZ_ELAPSED=0;
+}
+function updateQuizProgress(){
+  const total = ACTIVE_QUIZ.questions.length;
+  let ans=0; for(let i=0;i<total;i++){ if(document.querySelector('input[name="q'+i+'"]:checked')) ans++; }
+  document.getElementById('quizProg').style.width = Math.round((ans/total)*100) + '%';
+}
+function submitQuiz(){
+  stopTimer(); document.getElementById('quizBar').style.display='none';
+  const qs = ACTIVE_QUIZ.questions;
+  let score=0, correct=0, wrong=0; const details=[];
+  for(let i=0;i<qs.length;i++){
+    const q=qs[i];
+    const sel = document.querySelector('input[name="q'+i+'"]:checked');
+    const idx = sel ? parseInt(sel.value,10) : null;
+    const ok = (idx === q.correct);
+    if(idx!==null){
+      details.push({ q: q.question, chosen: idx, correct: ok });
+      incQAsked(q);
+      if(!ok) incQWrong(q);
+      if(ok){ score += 1.5; correct++; } else { score -= 0.4; wrong++; }
+    } else {
+      details.push({ q: q.question, chosen: null, correct: null });
+    }
+  }
+  const answered = details.filter(d => d.chosen!==null).length;
+  const notAns = qs.length - answered;
+  // esci dal training le domande corrette
+  qs.forEach((q,i)=>{ const d=details[i]; if(d.chosen!==null && d.correct) resetQWrong(q); });
+  pushResult({ score, correct, wrong, total: answered, numQuestions: qs.length, date: new Date().toLocaleString(), details, subject: CURRENT_SUBJECT, training:false, elapsed: QUIZ_ELAPSED });
+  // Review
+  let rev = `<div class="card"><h2>Revisione — ${CURRENT_SUBJECT}</h2>
+    <div style="margin-top:8px"><span class="pill">Corrette: ${correct}</span> <span class="pill">Sbagliate: ${wrong}</span> <span class="pill">Non risposte: ${notAns}</span> <span class="pill">Tempo: ${formatElapsed(QUIZ_ELAPSED)}</span></div>
+    <div class="row" style="margin-top:8px"><button id="toResult">Vai al riepilogo</button><button class="secondary" onclick="startQuiz(ACTIVE_QUIZ.id)">Riprova</button></div>
+  </div>`;
+  document.getElementById('quizReview').innerHTML = rev; show('quizReview');
+  document.getElementById('toResult').onclick = ()=> renderResult(qs, details, score, QUIZ_ELAPSED);
+}
+function formatElapsed(sec){ const mm=Math.floor(sec/60), ss=sec%60; return mm + ':' + (ss<10?('0'+ss):ss); }
+function renderResult(qs, details, score, elapsed){
+  let html = `<div class="card"><h2>Riepilogo Finale — ${CURRENT_SUBJECT}</h2>
+    <div style="margin-top:8px"><strong>Punteggio:</strong> ${score.toFixed(2)}</div>
+    <div class="row" style="margin-top:8px"><span class="pill">Tempo: ${formatElapsed(elapsed)}</span></div>
+  </div>`;
+  details.forEach((d,i)=>{
+    const q=qs[i];
+    html += `<fieldset><legend>Domanda ${i+1}</legend><p><strong>${q.question}</strong></p><form style="margin-bottom:.7em">`;
+    q.options.forEach((opt, idx)=>{
+      const checked = (d.chosen===idx) ? 'checked' : '';
+      const disabled = 'disabled';
+      let style=''; if(idx===q.correct) style='font-weight:bold;color:var(--ok)'; else if(d.chosen===idx && d.chosen!==q.correct) style='font-weight:bold;color:var(--bad)';
+      html += `<label style="display:flex;align-items:center;gap:8px;${style}"><input type="radio" ${checked} ${disabled}/> ${opt}</label>`;
+    });
+    if(d.chosen===null) html += `<p class="no-answer">➖ Nessuna risposta</p>`;
+    else html += `<p>${ d.correct ? '<span class="correct">✔ Corretta</span>' : '<span class="incorrect">✘ Sbagliata</span>' }</p>`;
+    if(q.explanation) html += `<p class="muted" style="font-size:.9rem">Spiegazione: ${q.explanation}</p>`;
+    html += `</form></fieldset>`;
+  });
+  html += `<div class="row" style="margin-top:8px"><button class="secondary" onclick="backToSection()">Fine</button></div>`;
+  document.getElementById('quizResult').innerHTML = html; show('quizResult');
+}
+
+/* =============================================================
+   ALLENAMENTO — UNICO PER TUTTI I QUIZ DELLA MATERIA
+   Priorità: sbagliate (wrong>0) max 1 per giro → poi non risposte (asked=0).
+   ============================================================= */
+let _trainingServed = new Set();
+let _trainingPhase = 'wrong';
+let _trainingCurrent = null;
+
+function openTraining(){
+  _trainingServed.clear(); _trainingPhase='wrong'; _trainingCurrent=null;
+  nextTrainingQuestion();
+}
+
+function gatherAllQuestionsForSubject(){
+  // aggrega tutte le domande da tutti i quiz della materia
+  const arr = readCloud(CURRENT_SUBJECT, 'quiz');
+  const qAll = [];
+  const seen = new Set();
+  arr.forEach(it => (it.data.questions||[]).forEach(q => {
+    const key = qKey(q);
+    if(!seen.has(key)){ seen.add(key); qAll.push(q); }
+  }));
+  return qAll;
+}
+
+function buildTrainingPools(){
+  const pool = gatherAllQuestionsForSubject();
+  const wrongPool=[], unansweredPool=[];
+  pool.forEach(q => {
+    const s = getQStat(q);
+    if ((s.wrong||0) > 0) wrongPool.push(q);
+    else if (!s.asked || s.asked===0) unansweredPool.push(q);
+  });
+  wrongPool.sort((a,b) => (getQStat(b).wrong||0) - (getQStat(a).wrong||0));
+  return { wrongPool, unansweredPool };
+}
+
+function nextTrainingQuestion(){
+  const wrap = document.getElementById('training');
+  const { wrongPool, unansweredPool } = buildTrainingPools();
+  // fase 1: sbagliate non ancora servite in questo giro
+  if(_trainingPhase==='wrong'){
+    for(const q of wrongPool){
+      const id=qKey(q);
+      if(!_trainingServed.has(id)){
+        _trainingServed.add(id);
+        return renderTrainingQuestion(q);
+      }
+    }
+    _trainingPhase='unanswered';
+  }
+  // fase 2: non risposte
+  if(_trainingPhase==='unanswered'){
+    if(unansweredPool.length>0) return renderTrainingQuestion(unansweredPool[0]);
+    // se ci sono ancora sbagliate, riparti un nuovo giro
+    if(wrongPool.length>0){ _trainingServed.clear(); _trainingPhase='wrong'; return nextTrainingQuestion(); }
+  }
+  // fine
+  wrap.innerHTML = `<div class="card"><h2>Modalità Allenamento — ${CURRENT_SUBJECT}</h2><p class="muted">Nulla da allenare: nessuna domanda sbagliata o non ancora fatta.</p><div class="row"><button class="secondary" onclick="show('subjectHome')">Indietro</button></div></div>`;
+  show('training');
+}
+
+function renderTrainingQuestion(q){
+  const s = getQStat(q);
+  const wrap = document.getElementById('training');
+  let html = `<div class="card"><h2>Modalità Allenamento — ${CURRENT_SUBJECT}</h2>
+  <div class="muted" style="margin-bottom:6px">Priorità: prima <strong>sbagliate</strong>, poi <strong>non risposte</strong>. La domanda esce dalla revisione quando rispondi correttamente.</div>
+  <fieldset><legend>${q.question}</legend><div class="muted" style="font-size:.9rem">Sbagliate consecutive: ${s.wrong||0} • Tentativi: ${s.asked||0}</div>`;
+  q.options.forEach((opt,i)=> html += `<label class="option"><input type="radio" name="trainAns" value="${i}"> <div>${opt}</div></label>` );
+  html += `</fieldset>
+  <div class="row"><button id="checkTrain">Conferma</button><button id="nextTrain" disabled>Avanti</button><button class="secondary" onclick="show('subjectHome')">Indietro</button></div>
+  <div id="trainFeedback" style="margin-top:10px"></div>
+  </div>`;
+  wrap.innerHTML = html; show('training');
+  document.getElementById('checkTrain').onclick = ()=>{
+    const ans = document.querySelector('input[name="trainAns"]:checked');
+    if(!ans){ toast('Seleziona una risposta.'); return; }
+    const idx = parseInt(ans.value,10), ok = (idx===q.correct);
+    incQAsked(q); if(ok) resetQWrong(q); else incQWrong(q);
+    pushResult({ score: ok?1.5:-0.4, correct: ok?1:0, wrong: ok?0:1, total:1, numQuestions:1, date:new Date().toLocaleString(), details:[{q:q.question,chosen:idx,correct:ok}], subject: CURRENT_SUBJECT, training:true, elapsed:0 });
+    const fb = document.getElementById('trainFeedback');
+    fb.innerHTML = ok ? `<p class="correct">✔ Corretto! La domanda esce dalla revisione.</p><p class="muted">${q.explanation||''}</p>` :
+      `<p class="incorrect">✘ Sbagliato.</p><p>Risposta corretta: <strong>${q.options[q.correct]}</strong></p><p class="muted">${q.explanation||''}</p>`;
+    document.getElementById('checkTrain').disabled = true;
+    const next = document.getElementById('nextTrain'); next.disabled = false; next.onclick = nextTrainingQuestion;
+  };
+}
+
+/* =============================================================
+   STATISTICHE
+   ============================================================= */
+function openStats(){
+  const res = lsGet(resultsKey(CURRENT_SUBJECT), []);
+  let tot=0, corr=0;
+  res.forEach(r=>{ tot += (r.total||0); corr += (r.correct||0); });
+  const p = tot? ((corr/tot)*100).toFixed(1) : '0.0';
+  let html = `<div class="card"><h2>Statistiche — ${CURRENT_SUBJECT}</h2>
+  <div style="margin-top:8px"><span class="pill">Risposte totali: ${tot}</span> <span class="pill">Corrette: ${corr} (${p}%)</span></div>`;
+  // Domande più sbagliate (mai corrette)
+  const wrongCount = {}, correctSet = {};
+  res.forEach(a => (a.details||[]).forEach(d => { if(d.correct) correctSet[d.q] = true; }));
+  res.forEach(a => (a.details||[]).forEach(d => { if(!d.correct && !correctSet[d.q]) wrongCount[d.q] = (wrongCount[d.q]||0)+1; }));
+  const list = Object.keys(wrongCount).map(k=>({q:k,count:wrongCount[k]})).sort((a,b)=>b.count-a.count).slice(0,8);
+  if(list.length){
+    html += `<h3 style="margin-top:10px">Domande più sbagliate</h3><ol>` + list.map(it=>`<li>${it.q} — ${it.count}×</li>`).join('') + `</ol>`;
+  } else {
+    html += `<p class="muted" style="margin-top:10px">Nessuna domanda ricorrente sbagliata.</p>`;
+  }
+  html += `<div class="row" style="margin-top:10px"><button class="secondary" onclick="show('subjectHome')">Indietro</button>
+  <button class="ghost" onclick="if(confirm('Eliminare tutte le statistiche della materia?')){ localStorage.removeItem('${resultsKey("TMP").replace("TMP", "'+CURRENT_SUBJECT+'")}'); localStorage.removeItem('${statsKey("TMP").replace("TMP", "'+CURRENT_SUBJECT+'")}'); openStats(); }">Elimina dati</button>
+  </div></div>`;
+  document.getElementById('stats').innerHTML = html; show('stats');
+}
+
+
+/* =============================================================
+   EDITOR — QUIZ
+   ============================================================= */
+function openQuizEditor(id){
+  const it = readCloud(CURRENT_SUBJECT, 'quiz').find(x => x.id===id);
+  if(!it){ toast('Quiz non trovato.'); return; }
+  window._QUIZ_EDIT_ITEM = it;
+  document.getElementById('quizEditTitle').value = it.title;
+  const cont = document.getElementById('quizEditList'); cont.innerHTML = '';
+  (it.data.questions||[]).forEach((q, i)=>{
+    const fs = document.createElement('fieldset');
+    fs.innerHTML = `<legend>Domanda ${i+1}</legend>
+      <label>Testo domanda <textarea data-k="question">${(q.question||'')}</textarea></label>
+      <div class="col">
+        <label>Opzione 1 <input type="text" data-k="opt0" value="${(q.options&&q.options[0]||'').replace(/"/g,'&quot;')}"/></label>
+        <label>Opzione 2 <input type="text" data-k="opt1" value="${(q.options&&q.options[1]||'').replace(/"/g,'&quot;')}"/></label>
+        <label>Opzione 3 <input type="text" data-k="opt2" value="${(q.options&&q.options[2]||'').replace(/"/g,'&quot;')}"/></label>
+        <label>Opzione 4 <input type="text" data-k="opt3" value="${(q.options&&q.options[3]||'').replace(/"/g,'&quot;')}"/></label>
+      </div>
+      <label>Corretta (0–3) <input type="number" min="0" max="3" data-k="correct" value="${q.correct||0}"/></label>
+      <label>Spiegazione <textarea data-k="explanation">${q.explanation||''}</textarea></label>
+    `;
+    cont.appendChild(fs);
+  });
+  document.getElementById('saveQuizEditBtn').onclick = ()=>{
+    const fs = Array.from(document.querySelectorAll('#quizEditList fieldset'));
+    const updated = fs.map(fset => {
+      const question = fset.querySelector('[data-k="question"]').value;
+      const opts = [0,1,2,3].map(i=> fset.querySelector('[data-k="opt'+i+'"]').value);
+      const correct = Math.max(0, Math.min(parseInt(fset.querySelector('[data-k="correct"]').value||'0',10), 3));
+      const explanation = fset.querySelector('[data-k="explanation"]').value;
+      return { question, options: opts, correct, explanation };
+    });
+    window._QUIZ_EDIT_ITEM.title = document.getElementById('quizEditTitle').value || window._QUIZ_EDIT_ITEM.title;
+    window._QUIZ_EDIT_ITEM.data.questions = updated;
+    saveToCloud(CURRENT_SUBJECT, 'quiz', window._QUIZ_EDIT_ITEM);
+    toast('Quiz salvato.');
+  };
+  show('quizEditor');
+};
+
+/* =============================================================
+   AVVIO
+   ============================================================= */
+show('welcome');
+</script>
+</body>
+</html>
