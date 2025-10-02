@@ -6,6 +6,52 @@ import multer from 'multer';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import OpenAI from 'openai';
 
+// ===== Throttle & Queue (configurabili da ENV) =====
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const OPENAI_RPM = parseInt(process.env.OPENAI_RPM || '30', 10);
+const OPENAI_CONCURRENCY = parseInt(process.env.OPENAI_CONCURRENCY || '2', 10);
+
+// Coda semplice per limitare la concorrenza delle chiamate OpenAI
+const _queue = [];
+let _active = 0;
+async function _pump(){
+  if (_active >= OPENAI_CONCURRENCY || !_queue.length) return;
+  const { fn, resolve, reject } = _queue.shift();
+  _active++;
+  try { resolve(await fn()); }
+  catch(e){ reject(e); }
+  finally { _active--; setImmediate(_pump); }
+}
+function runQueued(fn){ return new Promise((resolve, reject)=>{ _queue.push({ fn, resolve, reject }); _pump(); }); }
+
+// Throttle RPM su finestra mobile di 60s
+let _winStart = 0;
+let _reqInWindow = 0;
+async function throttleRPM(){
+  const now = Date.now();
+  if (now - _winStart >= 60_000) { _winStart = now; _reqInWindow = 0; }
+  if (_reqInWindow >= OPENAI_RPM) {
+    const wait = 60_000 - (now - _winStart) + 50;
+    await sleep(wait);
+    _winStart = Date.now(); _reqInWindow = 0;
+  }
+  _reqInWindow++;
+}
+
+// Retry/backoff per 429 residuali
+async function withRetries(fn, { retries=3, base=500 } = {}){
+  let i=0;
+  while(true){
+    try { return await fn(); }
+    catch(e){
+      const status = e?.status || e?.code || e?.response?.status;
+      if (status !== 429 || i >= retries) throw e;
+      await sleep(base * Math.pow(2,i) + Math.random()*150);
+      i++;
+    }
+  }
+}
+
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB
 
@@ -25,6 +71,10 @@ app.use(express.json({ limit: '2mb' }));
 const PORT = process.env.PORT || 8787;
 const HAS_OPENAI = !!process.env.OPENAI_API_KEY;
 const openai = HAS_OPENAI ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+// Log config effettiva per debug (senza segreti)
+const MODEL_CFG = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const MAX_TOKENS_CFG = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
+console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI}`);
 
 /* =============================================================
    AUTH OPZIONALE PER LE ROTTE /api/* (eccetto /api/ping)
@@ -121,39 +171,25 @@ function dummyQuiz(text, n=10) {
 /* =============================================================
    PROMPTING
    ============================================================= */
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
-async function withBackoff(fn, retries=2){
-  let attempt = 0, delay = 800;
-  while(true){
-    try { return await fn(); }
-    catch(e){
-      const status = e?.status || e?.response?.status;
-      const retryAfter = parseInt(e?.response?.headers?.['retry-after'] || e?.headers?.['retry-after'] || '0', 10);
-      if (status!==429 && status!==503) throw e;
-      if (attempt >= retries) throw e;
-      const wait = retryAfter>0 ? retryAfter*1000 : delay;
-      console.warn(`[openai] Rate limited/status ${status}. Retry in ${wait}ms (attempt ${attempt+1}/${retries})`);
-      await sleep(wait);
-      attempt++; delay *= 2;
-    }
-  }
-}
-
 async function askOpenAI_JSON(system, user, temperature=0.3) {
   if (!HAS_OPENAI) throw new Error("OPENAI non configurato");
   const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
-  const resp = await withBackoff(() => openai.chat.completions.create({
-    model: MODEL,
-    temperature,
-    max_tokens: maxTokens,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ]
-  }));
-  const txt = resp.choices?.[0]?.message?.content || "";
-  return safeJSON(txt);
+  return runQueued(async () => {
+    await throttleRPM();
+    const resp = await withRetries(() => openai.chat.completions.create({
+      model: MODEL,
+      temperature,
+      max_tokens: maxTokens,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ]
+    }));
+    const choice = resp.choices?.[0];
+    const txt = choice?.message?.content || "";
+    return safeJSON(txt);
+  });
 }
 
 /* =============================================================
@@ -224,6 +260,18 @@ TESTO:
    API
    ============================================================= */
 app.get('/api/ping', (req,res)=> res.json({ ok:true, hasOpenAI: HAS_OPENAI }));
+// Endpoint info per verifica configurazione runtime (richiede x-api-key se attiva)
+app.get('/api/info', (req,res)=>{
+  res.json({
+    ok: true,
+    hasOpenAI: HAS_OPENAI,
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10),
+    rpm: OPENAI_RPM,
+    concurrency: OPENAI_CONCURRENCY,
+    allowedOrigins: allowlist
+  });
+});
 
 async function extractPdfTextFromReq(req) {
   if (!req.file) throw new Error("PDF mancante (campo 'pdf')");

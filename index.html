@@ -89,6 +89,7 @@
     </div>
     <div class="row">
       <button class="secondary" id="toggleTheme">🌙</button>
+      <button class="secondary" id="showInfo">Info</button>
       <button class="secondary" id="goHome" style="display:none">Home</button>
     </div>
   </div>
@@ -335,6 +336,29 @@ document.getElementById('toggleTheme').onclick = ()=>{
 };
 (function(){ const on = localStorage.getItem('st_dark')==='1'; document.body.classList.toggle('dark', on); })();
 document.getElementById('goHome').onclick = ()=>{ CURRENT_SUBJECT=null; updateSubtitle(); show('subjects'); };
+document.getElementById('showInfo').onclick = async ()=>{
+  try{
+    const headers = API_KEY ? { 'x-api-key': API_KEY } : {};
+    const r = await fetch(API_BASE + '/api/info', { headers });
+    const js = await r.json().catch(()=>null);
+    if(!js || !js.ok){
+      toast('Impossibile leggere info backend. ' + (r.status===401 ? 'Autenticazione richiesta: imposta window.ST_API_KEY' : ''));
+      return;
+    }
+    // Mostra info in toast formattato
+    const pretty = JSON.stringify({
+      model: js.model,
+      maxTokens: js.maxTokens,
+      rpm: js.rpm,
+      concurrency: js.concurrency,
+      hasOpenAI: js.hasOpenAI,
+      allowedOrigins: js.allowedOrigins
+    }, null, 2);
+    const t=document.getElementById('toast');
+    document.getElementById('toastText').innerHTML = '<div><strong>Backend Info</strong></div><pre class="mono">'+pretty.replace(/[&<>]/g, s=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[s]))+'</pre>';
+    t.style.display='block'; document.getElementById('toastBtn').onclick=()=>t.style.display='none';
+  }catch(e){ toast('Errore info: ' + e.message); }
+};
 
 function enterSubject(subj){
   CURRENT_SUBJECT = subj;
