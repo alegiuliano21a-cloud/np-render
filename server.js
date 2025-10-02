@@ -10,6 +10,9 @@ import OpenAI from 'openai';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const OPENAI_RPM = parseInt(process.env.OPENAI_RPM || '30', 10);
 const OPENAI_CONCURRENCY = parseInt(process.env.OPENAI_CONCURRENCY || '2', 10);
+const SPREAD_DISABLE = process.env.SPREAD_DISABLE === '1';
+const CHUNK_PAUSE_MS = parseInt(process.env.CHUNK_PAUSE_MS || '0', 10);
+const MAX_INPUT_CHARS = parseInt(process.env.OPENAI_MAX_INPUT_CHARS || '50000', 10);
 
 // Coda semplice per limitare la concorrenza delle chiamate OpenAI
 const _queue = [];
@@ -32,6 +35,7 @@ async function throttleRPM(){
   if (now - _winStart >= 60_000) { _winStart = now; _reqInWindow = 0; }
   if (_reqInWindow >= OPENAI_RPM) {
     const wait = 60_000 - (now - _winStart) + 50;
+    if (DEBUG_LOG) console.log(`[${globalThis.__currentRid||'-'}][throttle] window ${_reqInWindow}/${OPENAI_RPM} wait ${wait}ms`);
     await sleep(wait);
     _winStart = Date.now(); _reqInWindow = 0;
   }
@@ -67,6 +71,20 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
+// Debug verbose abilitabile da ENV
+const DEBUG_LOG = (process.env.DEBUG_LOG === '1' || process.env.DEBUG_LOG === 'true');
+// Middleware: assegna un request-id e logga inizio/fine
+app.use((req, res, next) => {
+  const rid = Math.random().toString(36).slice(2,8) + '-' + Date.now().toString(36).slice(-4);
+  req._rid = rid;
+  const start = Date.now();
+  res.setHeader('x-request-id', rid);
+  console.log(`[${rid}] ${req.method} ${req.path} from ${req.ip || 'unknown'}`);
+  res.on('finish', () => {
+    console.log(`[${rid}] done ${res.statusCode} in ${Date.now()-start}ms`);
+  });
+  next();
+});
 
 const PORT = process.env.PORT || 8787;
 const HAS_OPENAI = !!process.env.OPENAI_API_KEY;
@@ -175,7 +193,11 @@ async function askOpenAI_JSON(system, user, temperature=0.3) {
   if (!HAS_OPENAI) throw new Error("OPENAI non configurato");
   const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
+  const rid = globalThis.__currentRid || '-';
+  if (DEBUG_LOG) console.log(`[${rid}] enqueue openai model=${MODEL} temp=${temperature} max_tokens=${maxTokens} q=${_queue.length} a=${_active}`);
   return runQueued(async () => {
+    const t0 = Date.now();
+    if (DEBUG_LOG) console.log(`[${rid}] start openai model=${MODEL}`);
     await throttleRPM();
     const resp = await withRetries(() => openai.chat.completions.create({
       model: MODEL,
@@ -188,6 +210,7 @@ async function askOpenAI_JSON(system, user, temperature=0.3) {
     }));
     const choice = resp.choices?.[0];
     const txt = choice?.message?.content || "";
+    if (DEBUG_LOG) console.log(`[${rid}] openai done in ${Date.now()-t0}ms finish=${choice?.finish_reason||'-'}`);
     return safeJSON(txt);
   });
 }
@@ -197,7 +220,7 @@ async function askOpenAI_JSON(system, user, temperature=0.3) {
    ============================================================= */
 function computeSpreadDelay(totalChars){
   // Nessun delay se documento piccolo (<8k char)
-  if (!HAS_OPENAI) return 0;
+  if (!HAS_OPENAI || SPREAD_DISABLE) return 0;
   const MIN = 8000, MAX = 50000; // coerente con chunk e truncation
   const MAX_MS = 120000; // 2 minuti
   const clamped = Math.max(0, Math.min(MAX, totalChars) - MIN);
@@ -279,7 +302,7 @@ async function extractPdfTextFromReq(req) {
   const data = await pdfParse(buffer);
   const txt = (data.text || '').replace(/\s+/g, ' ').trim();
   if (!txt) throw new Error("Impossibile estrarre testo dal PDF");
-  return txt.slice(0, 50000);
+  return txt.slice(0, MAX_INPUT_CHARS);
 }
 
 app.post('/api/summary', upload.single('pdf'), async (req,res)=>{
@@ -288,6 +311,7 @@ app.post('/api/summary', upload.single('pdf'), async (req,res)=>{
     const length = (req.body.length || 'medio').toLowerCase();
     const text = await extractPdfTextFromReq(req);
     const chunks = chunkText(text, 8000);
+    const rid = req._rid; console.log(`[${rid}] summary: subject=${subject} length=${length} chars=${text.length} chunks=${chunks.length}`);
     // Delay complessivo proporzionale alla dimensione; spalmato sui chunk
     const totalDelay = computeSpreadDelay(text.length);
     const perChunkDelay = chunks.length ? Math.floor(totalDelay / chunks.length) : 0;
@@ -295,14 +319,22 @@ app.post('/api/summary', upload.single('pdf'), async (req,res)=>{
     let partials = [];
     for (let i=0; i<chunks.length; i++) {
       const c = chunks[i];
-      if (i>0 && perChunkDelay>0) await sleep(perChunkDelay);
+      const sleepMs = (perChunkDelay>0) ? perChunkDelay : CHUNK_PAUSE_MS;
+      if (i>0 && sleepMs>0) await sleep(sleepMs);
+      globalThis.__currentRid = `${rid}:S${i+1}/${chunks.length}`;
+      const t0 = Date.now();
       const r = await buildSummary(c, subject, length);
+      if (DEBUG_LOG) console.log(`[${globalThis.__currentRid}] chunk done in ${Date.now()-t0}ms textLen=${(r.text||'').length}`);
       partials.push(r.text);
     }
     let finalText = partials.join("\n\n");
     if (partials.length > 1 && HAS_OPENAI) {
-      if (perChunkDelay>0) await sleep(perChunkDelay);
+      const sleepMs = (perChunkDelay>0) ? perChunkDelay : CHUNK_PAUSE_MS;
+      if (sleepMs>0) await sleep(sleepMs);
+      globalThis.__currentRid = `${rid}:S-MERGE`;
+      const t0 = Date.now();
       const r = await buildSummary(finalText, subject, length);
+      if (DEBUG_LOG) console.log(`[${globalThis.__currentRid}] merge done in ${Date.now()-t0}ms len=${(r.text||'').length}`);
       finalText = r.text;
     }
     res.json({ ok:true, data: { text: finalText } });
@@ -318,8 +350,13 @@ app.post('/api/flashcards', upload.single('pdf'), async (req,res)=>{
     const n = Math.max(1, Math.min(parseInt(req.body.num || '12', 10), 60));
     const text = await extractPdfTextFromReq(req);
     const spread = computeSpreadDelay(text.length);
-    if (spread>0) { console.log(`[rate-spread] flashcards delay=${spread}ms`); await sleep(spread); }
+    const delay = (spread>0) ? spread : CHUNK_PAUSE_MS;
+    if (delay>0) { console.log(`[rate-spread] flashcards delay=${delay}ms`); await sleep(delay); }
+    const rid = req._rid; globalThis.__currentRid = `${rid}:F`;
+    console.log(`[${rid}] flashcards: subject=${subject} diff=${difficulty} n=${n} chars=${text.length}`);
+    const t0 = Date.now();
     const out = await buildFlashcards(text, subject, n, difficulty);
+    if (DEBUG_LOG) console.log(`[${rid}] flashcards built in ${Date.now()-t0}ms count=${(out.cards||[]).length}`);
     res.json({ ok:true, data: out });
   }catch(e){
     res.status(400).json({ ok:false, error: e.message || String(e) });
@@ -333,8 +370,13 @@ app.post('/api/quiz', upload.single('pdf'), async (req,res)=>{
     const n = Math.max(1, Math.min(parseInt(req.body.num || '15', 10), 60));
     const text = await extractPdfTextFromReq(req);
     const spread = computeSpreadDelay(text.length);
-    if (spread>0) { console.log(`[rate-spread] quiz delay=${spread}ms`); await sleep(spread); }
+    const delay = (spread>0) ? spread : CHUNK_PAUSE_MS;
+    if (delay>0) { console.log(`[rate-spread] quiz delay=${delay}ms`); await sleep(delay); }
+    const rid = req._rid; globalThis.__currentRid = `${rid}:Q`;
+    console.log(`[${rid}] quiz: subject=${subject} diff=${difficulty} n=${n} chars=${text.length}`);
+    const t0 = Date.now();
     const out = await buildQuiz(text, subject, n, difficulty);
+    if (DEBUG_LOG) console.log(`[${rid}] quiz built in ${Date.now()-t0}ms raw=${(out.questions||[]).length}`);
     // sanifica e limita a n
     const uniq = [];
     const seen = new Set();
