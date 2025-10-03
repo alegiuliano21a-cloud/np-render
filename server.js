@@ -12,7 +12,7 @@ import Tesseract from 'tesseract.js';
    ========================= */
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
-const OCR_LANGS = process.env.OCR_LANGS || 'eng';
+const OCR_LANGS = process.env.OCR_LANGS || 'eng';   // es: "eng" oppure "eng+ita"
 
 // Comma-separated allowlist (es: https://tuo-sito.example,https://foo.bar)
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
@@ -75,12 +75,18 @@ function cleanText(s) {
     .trim();
 }
 
-// Converte Buffer/ArrayBuffer → Uint8Array per pdfjs
+// Converte Buffer/ArrayBuffer → Uint8Array per pdfjs (no Buffer!)
 function toUint8(buf) {
+  // 1) Node Buffer -> crea sempre una vista Uint8Array "pura"
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(buf)) {
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  // 2) Già Uint8Array (ma non Buffer)
   if (buf instanceof Uint8Array) return buf;
+  // 3) ArrayBuffer
   if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
-  // Node Buffer → Uint8Array (zero-copy view)
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  // 4) Fallback: prova a costruire una vista
+  return new Uint8Array(buf);
 }
 
 // Trova il primo file PDF valido tra req.files (multer.any())
@@ -173,6 +179,10 @@ app.use(express.json({ limit: '1mb' }));
 
 // Carica pdfjs-dist una volta all’avvio
 pdfjsLib = await loadPdfjs();
+// In ambiente Node non serve il worker di pdfjs
+if (pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+}
 
 // Health/info
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
