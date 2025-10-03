@@ -12,7 +12,8 @@ import Tesseract from 'tesseract.js';
    ========================= */
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
-const OCR_LANGS = process.env.OCR_LANGS || 'eng';   // es: "eng" oppure "eng+ita"
+const OCR_LANGS = process.env.OCR_LANGS || 'eng';      // es: "eng" oppure "eng+ita"
+const OCR_SCALE = parseFloat(process.env.OCR_SCALE || '2'); // scala raster (2 = qualità buona)
 
 // Comma-separated allowlist (es: https://tuo-sito.example,https://foo.bar)
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
@@ -22,9 +23,11 @@ const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
 
 const corsOptions = {
   origin: (origin, cb) => {
-    if (!ALLOWED.length) return cb(null, true);     // tutto consentito se vuoto (dev)
-    if (!origin) return cb(null, true);             // curl/postman senza Origin
-    return cb(null, ALLOWED.includes(origin));      // allowlist precisa
+    if (!ALLOWED.length) return cb(null, true); // tutto consentito se vuoto (dev)
+    if (!origin) return cb(null, true);         // curl/postman senza Origin
+    const ok = ALLOWED.includes(origin);
+    if (!ok && DEBUG) console.warn(`[CORS] Origin non ammessa: ${origin}`);
+    return cb(null, ok);
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -117,7 +120,7 @@ async function extractTextWithPdfjs(buffer, rid = '-') {
 }
 
 /** Rasterizza le pagine → PNG in memoria */
-async function rasterizePdfToPNGs(buffer, scale = 2) {
+async function rasterizePdfToPNGs(buffer, scale = OCR_SCALE) {
   const data = toUint8(buffer);
   const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
@@ -135,16 +138,24 @@ async function rasterizePdfToPNGs(buffer, scale = 2) {
   return out;
 }
 
-/** OCR locale con tesseract.js (fallback) */
+/** OCR locale con tesseract.js (fallback con retry lingua 'eng') */
 async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
   const label = `${rid}:OCR-local`;
-  if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs})`);
-  const images = await rasterizePdfToPNGs(buffer, 2);
+  if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs}, scale=${OCR_SCALE})`);
+  const images = await rasterizePdfToPNGs(buffer, OCR_SCALE);
   const parts = [];
-  for (const { page, png } of images) {
-    const res = await Tesseract.recognize(png, langs);
-    const text = res?.data?.text || '';
-    parts.push(cleanText(text));
+  for (const { png } of images) {
+    try {
+      const res = await Tesseract.recognize(png, langs);
+      parts.push(cleanText(res?.data?.text || ''));
+    } catch (err) {
+      if (DEBUG) console.warn(
+        `[${label}] OCR failed with "${langs}", retry on "eng":`,
+        err?.message || err
+      );
+      const fallback = await Tesseract.recognize(png, 'eng');
+      parts.push(cleanText(fallback?.data?.text || ''));
+    }
   }
   const joined = parts.join('\n\n').trim();
   if (!joined) throw new Error('OCR locale completato ma testo vuoto');
@@ -178,15 +189,11 @@ app.options('*', cors(corsOptions)); // preflight
 app.use(express.json({ limit: '1mb' }));
 
 // Carica pdfjs-dist una volta all’avvio
-pdfjsLib = await loadPdfjs();
-// In ambiente Node non serve il worker di pdfjs
-if (pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-}
+pdfjsLib = await loadPdfjs(); // (nessuna modifica a GlobalWorkerOptions)
 
 // Health/info
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
-app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS }));
+app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS, scale: OCR_SCALE }));
 
 // Estrazione pura (accetta qualsiasi nome di campo)
 app.post('/api/extract', (req, res) => {
@@ -214,7 +221,7 @@ app.post('/api/extract', (req, res) => {
 
 // Flashcards (demo locale semplice; accetta qualsiasi nome di campo)
 function buildFlashcards(text, n = 12) {
-  const sents = text.split(/\n+|\. +/).map(s => s.trim()).filter(s => s.length > 20);
+  const sents = (text || '').split(/\n+|\. +/).map(s => s.trim()).filter(s => s.length > 20);
   const pick = sents.slice(0, Math.min(n, sents.length));
   return pick.map((s, i) => ({
     id: i + 1,
@@ -250,5 +257,5 @@ app.post('/api/flashcards', (req, res) => {
 
 // Avvio
 app.listen(PORT, () => {
-  console.log(`[server] listening on :${PORT} (OCR=local langs=${OCR_LANGS})`);
+  console.log(`[server] listening on :${PORT} (OCR=local langs=${OCR_LANGS} scale=${OCR_SCALE})`);
 });
