@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -50,10 +49,10 @@ let PDF_VERSION = 'unknown';
 
 async function loadPdfjs() {
   const tries = [
-    // v3 first (CJS/UMD .js)
+    // v3 first (CJS/UMD .js) — più stabile in Node
     'pdfjs-dist/build/pdf.js',
     'pdfjs-dist/legacy/build/pdf.js',
-    // v4 fallback (ESM .mjs)
+    // v4 fallback (ESM .mjs) — solo se v3 non è presente
     'pdfjs-dist/build/pdf.mjs',
     'pdfjs-dist/legacy/build/pdf.mjs',
     // generic
@@ -63,9 +62,12 @@ async function loadPdfjs() {
   for (const spec of tries) {
     try {
       const mod = await import(spec);
+      // In v3 build .js è UMD/CJS; in ESM l’import può esporre .default
+      const lib = mod?.default?.getDocument ? mod.default : mod;
+      if (!lib?.getDocument) throw new Error('pdfjs getDocument non trovato');
       PDF_VERSION = spec;
       if (DEBUG) console.log(`[pdfjs] loaded: ${spec}`);
-      return mod;
+      return lib;
     } catch (e) {
       lastErr = e;
       if (DEBUG) console.warn(`[pdfjs] failed ${spec}: ${e?.message || e}`);
