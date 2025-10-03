@@ -13,6 +13,8 @@ import Tesseract from 'tesseract.js';
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
 const OCR_LANGS = process.env.OCR_LANGS || 'eng';
+
+// Comma-separated allowlist (es: https://tuo-sito.example,https://foo.bar)
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
@@ -20,13 +22,18 @@ const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
 
 const corsOptions = {
   origin: (origin, cb) => {
-    if (!ALLOWED.length) return cb(null, true);
-    if (!origin) return cb(null, true); // curl/postman
-    return cb(null, ALLOWED.includes(origin));
+    if (!ALLOWED.length) return cb(null, true);     // tutto consentito se vuoto (dev)
+    if (!origin) return cb(null, true);             // curl/postman senza Origin
+    return cb(null, ALLOWED.includes(origin));      // allowlist precisa
   },
   credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-api-key'],
 };
 
+/* =========================
+   Upload (PDF fino a 30MB)
+   ========================= */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB
@@ -35,12 +42,12 @@ const upload = multer({
 /* =========================
    Loader dinamico pdfjs-dist
    ========================= */
-let pdfjsLib; // (assegnata dopo)
+let pdfjsLib; // verrà assegnata all’avvio
 async function loadPdfjs() {
   const tries = [
     'pdfjs-dist/legacy/build/pdf.mjs',
     'pdfjs-dist/build/pdf.mjs',
-    'pdfjs-dist',
+    'pdfjs-dist', // alcune versioni risolvono così
   ];
   let lastErr;
   for (const spec of tries) {
@@ -68,7 +75,7 @@ function cleanText(s) {
     .trim();
 }
 
-/** Estrazione testo nativa con pdfjs-dist (niente pdf-parse) */
+/** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) */
 async function extractTextWithPdfjs(buffer, rid = '-') {
   const loadingTask = pdfjsLib.getDocument({ data: buffer });
   const pdf = await loadingTask.promise;
@@ -100,14 +107,13 @@ async function rasterizePdfToPNGs(buffer, scale = 2) {
   return out;
 }
 
-/** OCR locale con tesseract.js */
+/** OCR locale con tesseract.js (fallback) */
 async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
   const label = `${rid}:OCR-local`;
   if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs})`);
   const images = await rasterizePdfToPNGs(buffer, 2);
   const parts = [];
   for (const { page, png } of images) {
-    // Nota: Tesseract.js usa worker interni; nessun upload esterno
     const res = await Tesseract.recognize(png, langs);
     const text = res?.data?.text || '';
     parts.push(cleanText(text));
@@ -137,12 +143,16 @@ async function extractPdfText(buffer, rid = '-') {
    App & Routes
    ========================= */
 const app = express();
+
+// CORS PRIMA delle route
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // preflight
 app.use(express.json({ limit: '1mb' }));
 
 // Carica pdfjs-dist una volta all’avvio
 pdfjsLib = await loadPdfjs();
 
+// Health/info
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
 app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS }));
 
@@ -158,7 +168,7 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
   }
 });
 
-// Flashcards (demo semplice locale: niente LLM)
+// Flashcards (demo locale semplice)
 function buildFlashcards(text, n = 12) {
   const sents = text.split(/\n+|\. +/).map(s => s.trim()).filter(s => s.length > 20);
   const pick = sents.slice(0, Math.min(n, sents.length));
@@ -182,6 +192,7 @@ app.post('/api/flashcards', upload.single('file'), async (req, res) => {
   }
 });
 
+// Avvio
 app.listen(PORT, () => {
   console.log(`[server] listening on :${PORT} (OCR=local langs=${OCR_LANGS})`);
 });
