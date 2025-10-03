@@ -34,7 +34,7 @@ const corsOptions = {
 /* =========================
    Upload (PDF fino a 30MB)
    ========================= */
-// NOTA: usiamo .any() per evitare "Unexpected field" se il frontend usa nomi diversi
+// Usiamo .any() per evitare "Unexpected field" se il frontend usa nomi diversi
 const storage = multer.memoryStorage();
 const limits = { fileSize: 30 * 1024 * 1024 }; // 30 MB
 const uploadAny = multer({ storage, limits }).any();
@@ -75,11 +75,18 @@ function cleanText(s) {
     .trim();
 }
 
+// Converte Buffer/ArrayBuffer → Uint8Array per pdfjs
+function toUint8(buf) {
+  if (buf instanceof Uint8Array) return buf;
+  if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
+  // Node Buffer → Uint8Array (zero-copy view)
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
 // Trova il primo file PDF valido tra req.files (multer.any())
 function pickPdfFile(req) {
   const files = Array.isArray(req.files) ? req.files : [];
   if (!files.length) return null;
-  // preferisci application/pdf; in fallback usa estensione .pdf
   const byMime = files.find(f => (f.mimetype || '').toLowerCase() === 'application/pdf');
   if (byMime) return byMime;
   const byExt = files.find(f => (f.originalname || '').toLowerCase().endsWith('.pdf'));
@@ -88,7 +95,8 @@ function pickPdfFile(req) {
 
 /** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) */
 async function extractTextWithPdfjs(buffer, rid = '-') {
-  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const data = toUint8(buffer);
+  const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -104,13 +112,16 @@ async function extractTextWithPdfjs(buffer, rid = '-') {
 
 /** Rasterizza le pagine → PNG in memoria */
 async function rasterizePdfToPNGs(buffer, scale = 2) {
-  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const data = toUint8(buffer);
+  const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
   const out = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale });
-    const canvas = createCanvas(viewport.width, viewport.height);
+    const W = Math.max(1, Math.round(viewport.width));
+    const H = Math.max(1, Math.round(viewport.height));
+    const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
     await page.render({ canvasContext: ctx, viewport }).promise;
     out.push({ page: p, png: canvas.toBuffer('image/png') });
@@ -172,7 +183,6 @@ app.post('/api/extract', (req, res) => {
   uploadAny(req, res, async (err) => {
     const rid = req.headers['x-request-id'] || Math.random().toString(36).slice(2);
     if (err) {
-      // Errori Multer (size, unexpected field, etc.)
       const code = err.code || 'UPLOAD_ERROR';
       const msg = err.message || String(err);
       if (DEBUG) console.warn(`[${rid}] Multer error:`, code, msg);
@@ -186,6 +196,7 @@ app.post('/api/extract', (req, res) => {
       const text = await extractPdfText(file.buffer, rid);
       res.json({ ok: true, chars: text.length, text });
     } catch (e) {
+      if (DEBUG) console.error(`[${rid}] ERROR:`, e);
       res.status(500).json({ ok: false, error: e?.message || String(e) });
     }
   });
@@ -221,6 +232,7 @@ app.post('/api/flashcards', (req, res) => {
       const cards = buildFlashcards(text, 12);
       res.json({ ok: true, count: cards.length, cards });
     } catch (e) {
+      if (DEBUG) console.error(`[${rid}] ERROR:`, e);
       res.status(500).json({ ok: false, error: e?.message || String(e) });
     }
   });
