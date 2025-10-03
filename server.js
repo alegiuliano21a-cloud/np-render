@@ -42,14 +42,14 @@ const limits = { fileSize: 30 * 1024 * 1024 }; // 30 MB
 const uploadAny = multer({ storage, limits }).any();
 
 /* =========================
-   Loader dinamico pdfjs-dist
+   Loader dinamico pdfjs-dist (preferisci build/ poi legacy/)
    ========================= */
 let pdfjsLib; // assegnata all’avvio
 async function loadPdfjs() {
   const tries = [
-    'pdfjs-dist/legacy/build/pdf.mjs',
     'pdfjs-dist/build/pdf.mjs',
-    'pdfjs-dist', // alcune versioni risolvono così
+    'pdfjs-dist/legacy/build/pdf.mjs',
+    'pdfjs-dist',
   ];
   let lastErr;
   for (const spec of tries) {
@@ -64,6 +64,14 @@ async function loadPdfjs() {
   }
   throw new Error(`Impossibile caricare pdfjs-dist: ${lastErr?.message || lastErr}`);
 }
+
+// Opzioni robuste per Node (evitano worker/clone/fetch)
+const PDFJS_DOC_OPTS = {
+  disableWorker: true,
+  useWorkerFetch: false,
+  isEvalSupported: false,
+  verbosity: 0,
+};
 
 /* =========================
    Helpers
@@ -108,8 +116,7 @@ function pickPdfFile(req) {
 
 /** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) — accetta Uint8Array */
 async function extractTextWithPdfjs(dataU8, rid = '-') {
-  // ⛔ Disabilita il worker per evitare transfer di oggetti non supportati
-  const loadingTask = pdfjsLib.getDocument({ data: dataU8, disableWorker: true });
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8, ...PDFJS_DOC_OPTS });
   const pdf = await loadingTask.promise;
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -125,8 +132,7 @@ async function extractTextWithPdfjs(dataU8, rid = '-') {
 
 /** Rasterizza le pagine → PNG in memoria — accetta Uint8Array */
 async function rasterizePdfToPNGs(dataU8, scale = OCR_SCALE) {
-  // ⛔ Disabilita il worker anche qui
-  const loadingTask = pdfjsLib.getDocument({ data: dataU8, disableWorker: true });
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8, ...PDFJS_DOC_OPTS });
   const pdf = await loadingTask.promise;
   const out = [];
   for (let p = 1; p <= pdf.numPages; p++) {
