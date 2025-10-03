@@ -1,21 +1,17 @@
 {
   "name": "studytool-backend",
   "version": "1.0.0",
-  "description": "Backend IA per PDF \u2192 riassunti, flashcards e quiz",
-  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "start": "node server.js"
   },
   "dependencies": {
+    "canvas": "^2.11.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
-    "openai": "^4.56.0",
-    "tesseract.js": "^5.0.4",
-    "canvas": "^2.11.2",
-    "pdfjs-dist": "^4.7.76"
+    "pdfjs-dist": "^4.7.76",
+    "tesseract.js": "^5.0.4"
   }
 }
