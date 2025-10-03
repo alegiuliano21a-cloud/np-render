@@ -196,45 +196,77 @@ function dummyQuiz(text, n=10) {
 /* =============================================================
    PROMPTING
    ============================================================= */
-async function askOpenAI_JSON(system, user, temperature=0.3) {
+async function askOpenAI_JSON(system, user, temperature=0.3, opts={}) {
   if (!HAS_OPENAI) throw new Error("OPENAI non configurato");
   const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
   const rid = globalThis.__currentRid || '-';
-  if (DEBUG_LOG) console.log(`[${rid}] enqueue openai model=${MODEL} temp=${temperature} max_tokens=${maxTokens} q=${_queue.length} a=${_active}`);
+  const attemptsCfg = parseInt(process.env.OPENAI_JSON_ATTEMPTS || '2', 10);
+  const attempts = Math.max(1, parseInt(opts.attempts || attemptsCfg || 2, 10));
+  const schema = opts.schema || null;
+  const schemaName = opts.schemaName || 'response';
+  const responseFormat = schema
+    ? { type: 'json_schema', json_schema: { name: schemaName, schema } }
+    : { type: 'json_object' };
+  if (DEBUG_LOG) console.log(`[${rid}] enqueue openai model=${MODEL} temp=${temperature} max_tokens=${maxTokens} q=${_queue.length} a=${_active} attempts=${attempts} schema=${schema?'on':'off'}`);
   return runQueued(async () => {
-    const t0 = Date.now();
-    if (DEBUG_LOG) console.log(`[${rid}] start openai model=${MODEL}`);
-    await throttleRPM();
-    const resp = await withRetries(() => openai.chat.completions.create({
-      model: MODEL,
-      temperature,
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ]
-    }));
-    const choice = resp.choices?.[0];
-    const txt = choice?.message?.content || "";
-    if (DEBUG_LOG) console.log(`[${rid}] openai done in ${Date.now()-t0}ms finish=${choice?.finish_reason||'-'}`);
-    return safeJSON(txt);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const t0 = Date.now();
+        if (DEBUG_LOG) console.log(`[${rid}] start openai model=${MODEL} attempt=${attempt}/${attempts}`);
+        await throttleRPM();
+        const basePayload = {
+          model: MODEL,
+          temperature,
+          max_tokens: maxTokens,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user }
+          ]
+        };
+        const call = (payload) => withRetries(() => openai.chat.completions.create(payload));
+        let resp;
+        let usedNativeJson = false;
+        try {
+          resp = await call({ ...basePayload, response_format: responseFormat });
+          usedNativeJson = true;
+        } catch (err) {
+          const errMsg = (err?.error?.message || err?.message || '').toLowerCase();
+          if (err?.status === 400 && errMsg.includes('response_format')) {
+            if (DEBUG_LOG) console.warn(`[${rid}] response_format unsupported, falling back to text JSON parsing`);
+            resp = await call(basePayload);
+          } else {
+            throw err;
+          }
+        }
+        const choice = resp.choices?.[0];
+        if (DEBUG_LOG) console.log(`[${rid}] openai done in ${Date.now()-t0}ms finish=${choice?.finish_reason||'-'} attempt=${attempt}`);
+        const parsed = choice?.message?.parsed;
+        if (usedNativeJson && parsed) return parsed;
+        const content = choice?.message?.content;
+        let txt = '';
+        if (Array.isArray(content)) {
+          txt = content.map(part => part?.text || '').join('').trim();
+        } else if (typeof content === 'string') {
+          txt = content;
+        }
+        if (!txt && usedNativeJson) throw new Error('Risposta OpenAI senza JSON');
+        return safeJSON(txt);
+      } catch (err) {
+        lastErr = err;
+        if (DEBUG_LOG) console.warn(`[${rid}] askOpenAI_JSON attempt ${attempt} failed: ${err.message}`);
+        if (attempt < attempts) await sleep(150 * attempt);
+      }
+    }
+    throw lastErr || new Error('Impossibile ottenere JSON valido da OpenAI');
   });
 }
 
 /* =============================================================
    RATE LIMIT SPREAD (ritardi in base alla dimensione del PDF)
    ============================================================= */
-function computeSpreadDelay(totalChars){
-  // Nessun delay se documento piccolo (<8k char)
-  if (!HAS_OPENAI || SPREAD_DISABLE) return 0;
-  const MIN = 8000, MAX = 50000; // coerente con chunk e truncation
-  const MAX_MS = 120000; // 2 minuti
-  const clamped = Math.max(0, Math.min(MAX, totalChars) - MIN);
-  if (clamped <= 0) return 0;
-  const span = MAX - MIN;
-  return Math.floor((clamped / span) * MAX_MS);
-}
+function computeSpreadDelay(){ return 0; }
 
 async function buildSummary(text, subject, length) {
   if (!HAS_OPENAI) return { text: dummySummary(text, length) };
@@ -247,7 +279,15 @@ Formatta in JSON: {"text": "<riassunto>"}
 TESTO:
 """${text}"""
   `.trim();
-  const out = await askOpenAI_JSON(system, user, 0.3);
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      text: { type: 'string', description: 'Riassunto in italiano del testo fornito' }
+    },
+    required: ['text']
+  };
+  const out = await askOpenAI_JSON(system, user, 0.3, { schemaName: 'summary_response', schema });
   if (!out.text) throw new Error("JSON senza campo 'text'");
   return out;
 }
@@ -263,7 +303,33 @@ Formato JSON:
 TESTO:
 """${text}"""
   `.trim();
-  const out = await askOpenAI_JSON(system, user, 0.4);
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      cards: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 60,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            front: { type: 'string' },
+            back: { type: 'string' },
+            difficulty: { type: 'string', enum: ['facile', 'media', 'difficile'] },
+            tags: {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          },
+          required: ['front', 'back']
+        }
+      }
+    },
+    required: ['cards']
+  };
+  const out = await askOpenAI_JSON(system, user, 0.4, { schemaName: 'flashcards_response', schema });
   if (!out.cards || !Array.isArray(out.cards)) throw new Error("JSON senza 'cards'");
   return out;
 }
@@ -281,7 +347,35 @@ Formato JSON:
 TESTO:
 """${text}"""
   `.trim();
-  const out = await askOpenAI_JSON(system, user, 0.4);
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      questions: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 60,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            question: { type: 'string' },
+            options: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 4,
+              maxItems: 4
+            },
+            correct: { type: 'integer', minimum: 0, maximum: 3 },
+            explanation: { type: 'string' }
+          },
+          required: ['question', 'options', 'correct']
+        }
+      }
+    },
+    required: ['questions']
+  };
+  const out = await askOpenAI_JSON(system, user, 0.4, { schemaName: 'quiz_response', schema });
   if (!out.questions || !Array.isArray(out.questions)) throw new Error("JSON senza 'questions'");
   return out;
 }
