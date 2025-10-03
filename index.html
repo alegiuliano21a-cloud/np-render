@@ -64,8 +64,8 @@
   body.dark .card, body.dark .notice, body.dark .loader { background: var(--card); color: var(--fg) }
   body.dark input, body.dark select, body.dark textarea { background: #fff; color: #000; border:1px solid #e6e6e9 }
 </style>
-</head>
-<body>
+</head><body>
+  <div id="estimateArea" style="display:none; padding:12px; margin:12px; border-radius:12px; background:#fff3cd; color:#664d03; border:1px solid #ffecb5; font:14px/1.4 system-ui, sans-serif;"></div>
 <div class="app" role="application" aria-label="StudyTool">
   <!-- Toast -->
   <div id="toast" class="toast" style="display:none">
@@ -945,5 +945,64 @@ function openQuizEditor(id){
    ============================================================= */
 show('welcome');
 </script>
-</body>
-</html>
+
+<script>
+// ---- Stima tempi attesa (standard + OCR) ----
+// Permette override via variabili globali, es. in un <script> prima:
+// window.ST_EST_STANDARD_BASE=30; window.ST_EST_STANDARD_PER_MB=4;
+// window.ST_EST_OCR_BASE=90; window.ST_EST_OCR_PER_MB=20;
+
+(function(){
+  const cfg = {
+    standardBase: Number(window.ST_EST_STANDARD_BASE ?? 30),    // +30s di base
+    standardPerMB: Number(window.ST_EST_STANDARD_PER_MB ?? 4),  // s per MB
+    ocrBase: Number(window.ST_EST_OCR_BASE ?? 90),              // base OCR più alta
+    ocrPerMB: Number(window.ST_EST_OCR_PER_MB ?? 20)            // s per MB
+  };
+
+  function fmt(sec){
+    sec = Math.max(1, Math.round(sec));
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec/60), s = sec%60;
+    return s ? `${m}m ${s}s` : `${m}m`;
+  }
+
+  function estimateForSize(bytes){
+    const mb = Math.max(0.1, bytes / (1024*1024));
+    const standard = cfg.standardBase + cfg.standardPerMB * mb;
+    const ocr = cfg.ocrBase + cfg.ocrPerMB * mb;
+    return { mb: mb.toFixed(2), standard, ocr };
+  }
+
+  // Hook su input file se presente
+  const fileInput = document.querySelector('input[type="file"]');
+  const estArea = document.getElementById('estimateArea');
+
+  function renderEst(file){
+    if (!file || !estArea) return;
+    const e = estimateForSize(file.size);
+    estArea.style.display = 'block';
+    estArea.innerHTML = `
+      <strong>Stima tempi di attesa</strong><br>
+      File: <code>${file.name}</code> (${e.mb} MB)<br>
+      • Modalità standard (testo selezionabile): ~ <b>${fmt(e.standard)}</b> <span style="opacity:.8">(include +30s di base)</span><br>
+      • Modalità OCR (scansione/immagini): ~ <b>${fmt(e.ocr)}</b><br>
+      <div style="margin-top:6px; font-size:13px;">
+        <b>Nota:</b> se il PDF è una <u>scansione</u> o contiene pagine come immagini, l'estrazione potrebbe attivare l'<b>OCR</b> e richiedere più tempo.
+      </div>`;
+  }
+
+  if (fileInput) {
+    fileInput.addEventListener('change', (e)=>{
+      const f = e.target.files && e.target.files[0];
+      renderEst(f);
+    });
+  }
+
+  // Espone per uso durante l'upload (se vuoi aggiornare messaggi nel tuo overlay)
+  window.__ST_estimateForFile = estimateForSize;
+  window.__ST_fmtSec = fmt;
+})();
+</script>
+
+</body></html>

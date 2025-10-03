@@ -102,6 +102,8 @@ const OCR_MODEL_CFG = process.env.OPENAI_OCR_MODEL || MODEL_CFG;
 const OCR_MAX_OUTPUT_TOKENS = parseInt(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS || '2000', 10);
 const KEY_TYPE = apiKey.startsWith('sk-proj-') ? 'project' : (apiKey.startsWith('sk-') ? 'user' : (apiKey ? 'unknown' : 'none'));
 const KEY_LEN = apiKey.length;
+const BASE_URL = (process.env.OPENAI_BASE_URL || '').trim();
+const IS_OPENROUTER = /openrouter\.ai\/api\/v1/i.test(BASE_URL);
 console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI} keyType=${KEY_TYPE} keyLen=${KEY_LEN} project=${process.env.OPENAI_PROJECT? 'set':''} baseURL=${process.env.OPENAI_BASE_URL? 'set':''} ocrEnabled=${OCR_ENABLED} ocrModel=${OCR_MODEL_CFG}`);
 
 /* =============================================================
@@ -499,6 +501,38 @@ app.get('/api/debug/openai', async (req,res)=>{
   }
 });
 
+// --- Local OCR (pdfjs-dist + canvas + tesseract.js) ---
+async function rasterizePdfToPNGs(buffer, scale = 2) {
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  const out = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale });
+    const canvas = createCanvas(viewport.width, viewport.height);
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    out.push({ page: p, png: canvas.toBuffer('image/png') });
+  }
+  return out;
+}
+
+async function runLocalOCR(buffer, { langs = (process.env.OCR_LANGS || 'eng'), rid = '-' } = {}) {
+  const label = `${rid}:OCR-local`;
+  console.log(`[${label}] OCR locale attivo (tesseract.js, langs=${langs})`);
+  const images = await rasterizePdfToPNGs(buffer, 2);
+  let pagesText = [];
+  for (const { page, png } of images) {
+    const res = await Tesseract.recognize(png, langs, { logger: m => (m && m.status === 'recognizing text' ? null : null) });
+    const text = (res && res.data && res.data.text) ? res.data.text : '';
+    pagesText.push(text.trim());
+  }
+  const cleaned = pagesText.map(t => t.trim()).join('\n\n').trim();
+  if (!cleaned) throw new Error('OCR locale completato ma testo vuoto');
+  console.log(`[${label}] OCR locale completato. Caratteri estratti=${cleaned.length}`);
+  return cleaned.slice(0, MAX_INPUT_CHARS);
+}
+
 async function extractPdfTextFromReq(req) {
   if (!req.file) throw new Error("PDF mancante (campo 'pdf')");
   const buffer = req.file.buffer;
@@ -510,7 +544,14 @@ async function extractPdfTextFromReq(req) {
     console.warn(`[${req._rid||'-'}] Errore pdf-parse: ${err?.message || err}`);
   }
   if (!txt) {
-    console.log(`[${req._rid||'-'}] Nessun testo PDF estratto. Avvio fallback OCR...`);
+  console.log(`[${req._rid||'-'}] Nessun testo PDF estratto. Avvio OCR locale...`);
+  try {
+    txt = await runLocalOCR(buffer, { rid: req._rid || '-' });
+  } catch (ocrErr) {
+    const reason = ocrErr?.message || String(ocrErr);
+    throw new Error(`Impossibile estrarre testo dal PDF (OCR locale fallito: ${reason})`);
+  }
+}] Nessun testo PDF estratto. Avvio fallback OCR...`);
     try {
       txt = await runPdfOCR(buffer, req._rid || '-');
     } catch (ocrErr) {
