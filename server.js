@@ -1,3 +1,4 @@
+
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -42,19 +43,27 @@ const limits = { fileSize: 30 * 1024 * 1024 }; // 30 MB
 const uploadAny = multer({ storage, limits }).any();
 
 /* =========================
-   Loader dinamico pdfjs-dist (preferisci build/ poi legacy/)
+   Loader dinamico pdfjs-dist (preferisci v3 .js; fallback v4 .mjs)
    ========================= */
 let pdfjsLib; // assegnata all’avvio
+let PDF_VERSION = 'unknown';
+
 async function loadPdfjs() {
   const tries = [
+    // v3 first (CJS/UMD .js)
+    'pdfjs-dist/build/pdf.js',
+    'pdfjs-dist/legacy/build/pdf.js',
+    // v4 fallback (ESM .mjs)
     'pdfjs-dist/build/pdf.mjs',
     'pdfjs-dist/legacy/build/pdf.mjs',
+    // generic
     'pdfjs-dist',
   ];
   let lastErr;
   for (const spec of tries) {
     try {
       const mod = await import(spec);
+      PDF_VERSION = spec;
       if (DEBUG) console.log(`[pdfjs] loaded: ${spec}`);
       return mod;
     } catch (e) {
@@ -65,7 +74,7 @@ async function loadPdfjs() {
   throw new Error(`Impossibile caricare pdfjs-dist: ${lastErr?.message || lastErr}`);
 }
 
-// Opzioni robuste per Node (evitano worker/clone/fetch)
+// Opzioni “safe per Node”
 const PDFJS_DOC_OPTS = {
   disableWorker: true,
   useWorkerFetch: false,
@@ -114,7 +123,7 @@ function pickPdfFile(req) {
   return byExt || null;
 }
 
-/** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) — accetta Uint8Array */
+/** Estrazione testo nativa con pdfjs — accetta Uint8Array */
 async function extractTextWithPdfjs(dataU8, rid = '-') {
   const loadingTask = pdfjsLib.getDocument({ data: dataU8, ...PDFJS_DOC_OPTS });
   const pdf = await loadingTask.promise;
@@ -151,7 +160,7 @@ async function rasterizePdfToPNGs(dataU8, scale = OCR_SCALE) {
 /** OCR locale con tesseract.js (fallback con retry lingua 'eng') — accetta Uint8Array */
 async function runLocalOCR(dataU8, { langs = OCR_LANGS, rid = '-' } = {}) {
   const label = `${rid}:OCR-local`;
-  if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs}, scale=${OCR_SCALE})`);
+  if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs}, scale=${OCR_SCALE}, pdfjs=${PDF_VERSION})`);
   const images = await rasterizePdfToPNGs(dataU8, OCR_SCALE);
   const parts = [];
   for (const { png } of images) {
@@ -203,7 +212,7 @@ pdfjsLib = await loadPdfjs();
 
 // Health/info
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
-app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS, scale: OCR_SCALE }));
+app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS, scale: OCR_SCALE, pdfjs: PDF_VERSION }));
 
 // Estrazione pura (accetta qualsiasi nome di campo)
 app.post('/api/extract', (req, res) => {
