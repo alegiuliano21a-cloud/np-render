@@ -55,7 +55,7 @@ const upload = multer({
 });
 
 const app = express();
-const pdfjsLib = await __loadPdfjs();
+pdfjsLib = await __loadPdfjs();
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
