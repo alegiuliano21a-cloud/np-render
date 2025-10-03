@@ -13,7 +13,7 @@ import Tesseract from 'tesseract.js';
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
 const OCR_LANGS = process.env.OCR_LANGS || 'eng';           // es: "eng" oppure "eng+ita"
-const OCR_SCALE = parseFloat(process.env.OCR_SCALE || '2'); // scala raster (2 = qualità buona)
+const OCR_SCALE = parseFloat(process.env.OCR_SCALE || '2'); // 2 = qualità buona
 
 // Comma-separated allowlist (es: https://tuo-sito.example,https://foo.bar)
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
@@ -37,7 +37,6 @@ const corsOptions = {
 /* =========================
    Upload (PDF fino a 30MB)
    ========================= */
-// Usiamo .any() per evitare "Unexpected field" se il frontend usa nomi diversi
 const storage = multer.memoryStorage();
 const limits = { fileSize: 30 * 1024 * 1024 }; // 30 MB
 const uploadAny = multer({ storage, limits }).any();
@@ -45,7 +44,7 @@ const uploadAny = multer({ storage, limits }).any();
 /* =========================
    Loader dinamico pdfjs-dist
    ========================= */
-let pdfjsLib; // verrà assegnata all’avvio
+let pdfjsLib; // assegnata all’avvio
 async function loadPdfjs() {
   const tries = [
     'pdfjs-dist/legacy/build/pdf.mjs',
@@ -83,26 +82,17 @@ function cleanText(s) {
  * in una Uint8Array **CLONATA** (no viste → niente detach).
  */
 function toUint8Clone(input) {
-  // Buffer Node → copia byte a byte
   if (typeof Buffer !== 'undefined' && Buffer.isBuffer(input)) {
     const out = new Uint8Array(input.length);
-    out.set(input); // copia
+    out.set(input);
     return out;
   }
-  // Uint8Array → copia (slice 0 clona)
-  if (input instanceof Uint8Array) {
-    return input.slice(0);
-  }
-  // ArrayBuffer → copia (slice clona)
-  if (input instanceof ArrayBuffer) {
-    return new Uint8Array(input.slice(0));
-  }
-  // DataView o altre TypedArray → copia porzione
+  if (input instanceof Uint8Array) return input.slice(0);
+  if (input instanceof ArrayBuffer) return new Uint8Array(input.slice(0));
   if (ArrayBuffer.isView(input)) {
     const { buffer, byteOffset, byteLength } = input;
     return new Uint8Array(buffer.slice(byteOffset, byteOffset + byteLength));
   }
-  // Fallback: prova a costruire da array-like / iterable (copia implicita)
   return Uint8Array.from(input);
 }
 
@@ -118,7 +108,8 @@ function pickPdfFile(req) {
 
 /** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) — accetta Uint8Array */
 async function extractTextWithPdfjs(dataU8, rid = '-') {
-  const loadingTask = pdfjsLib.getDocument({ data: dataU8 });
+  // ⛔ Disabilita il worker per evitare transfer di oggetti non supportati
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8, disableWorker: true });
   const pdf = await loadingTask.promise;
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -134,7 +125,8 @@ async function extractTextWithPdfjs(dataU8, rid = '-') {
 
 /** Rasterizza le pagine → PNG in memoria — accetta Uint8Array */
 async function rasterizePdfToPNGs(dataU8, scale = OCR_SCALE) {
-  const loadingTask = pdfjsLib.getDocument({ data: dataU8 });
+  // ⛔ Disabilita il worker anche qui
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8, disableWorker: true });
   const pdf = await loadingTask.promise;
   const out = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -161,10 +153,7 @@ async function runLocalOCR(dataU8, { langs = OCR_LANGS, rid = '-' } = {}) {
       const res = await Tesseract.recognize(png, langs);
       parts.push(cleanText(res?.data?.text || ''));
     } catch (err) {
-      if (DEBUG) console.warn(
-        `[${label}] OCR failed with "${langs}", retry on "eng":`,
-        err?.message || err
-      );
+      if (DEBUG) console.warn(`[${label}] OCR failed with "${langs}", retry on "eng":`, err?.message || err);
       const fallback = await Tesseract.recognize(png, 'eng');
       parts.push(cleanText(fallback?.data?.text || ''));
     }
@@ -204,7 +193,7 @@ app.options('*', cors(corsOptions)); // preflight
 app.use(express.json({ limit: '1mb' }));
 
 // Carica pdfjs-dist una volta all’avvio
-pdfjsLib = await loadPdfjs(); // (nessuna modifica a GlobalWorkerOptions)
+pdfjsLib = await loadPdfjs();
 
 // Health/info
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
