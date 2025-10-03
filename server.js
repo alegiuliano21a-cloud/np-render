@@ -7,32 +7,40 @@ import multer from 'multer';
 import { createCanvas } from 'canvas';
 import Tesseract from 'tesseract.js';
 
-// ---- ENV
+/* =========================
+   ENV & CORS
+   ========================= */
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
 const OCR_LANGS = process.env.OCR_LANGS || 'eng';
-const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
-// ---- CORS
 const corsOptions = {
   origin: (origin, cb) => {
     if (!ALLOWED.length) return cb(null, true);
-    if (!origin) return cb(null, true);
-    cb(null, ALLOWED.includes(origin));
+    if (!origin) return cb(null, true); // curl/postman
+    return cb(null, ALLOWED.includes(origin));
   },
-  credentials: true
+  credentials: true,
 };
 
-// ---- Multer
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB
+});
 
-// ---- Loader dinamico pdfjs-dist
-let pdfjsLib;
-async function __loadPdfjs() {
+/* =========================
+   Loader dinamico pdfjs-dist
+   ========================= */
+let pdfjsLib; // (assegnata dopo)
+async function loadPdfjs() {
   const tries = [
     'pdfjs-dist/legacy/build/pdf.mjs',
     'pdfjs-dist/build/pdf.mjs',
-    'pdfjs-dist'
+    'pdfjs-dist',
   ];
   let lastErr;
   for (const spec of tries) {
@@ -42,13 +50,15 @@ async function __loadPdfjs() {
       return mod;
     } catch (e) {
       lastErr = e;
-      if (DEBUG) console.warn(`[pdfjs] failed ${spec}: ${e?.message||e}`);
+      if (DEBUG) console.warn(`[pdfjs] failed ${spec}: ${e?.message || e}`);
     }
   }
-  throw new Error(`Impossibile caricare pdfjs-dist: ${lastErr?.message||lastErr}`);
+  throw new Error(`Impossibile caricare pdfjs-dist: ${lastErr?.message || lastErr}`);
 }
 
-// ---- Helpers
+/* =========================
+   Helpers
+   ========================= */
 function cleanText(s) {
   return String(s || '')
     .replace(/\u0000/g, '')
@@ -58,6 +68,23 @@ function cleanText(s) {
     .trim();
 }
 
+/** Estrazione testo nativa con pdfjs-dist (niente pdf-parse) */
+async function extractTextWithPdfjs(buffer, rid = '-') {
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const textContent = await page.getTextContent();
+    const text = textContent.items.map(it => it.str).join(' ').replace(/\s+/g, ' ').trim();
+    pages.push(text);
+  }
+  const joined = pages.join('\n\n').trim();
+  if (DEBUG) console.log(`[${rid}] pdfjs text extract: pages=${pages.length} chars=${joined.length}`);
+  return joined;
+}
+
+/** Rasterizza le pagine → PNG in memoria */
 async function rasterizePdfToPNGs(buffer, scale = 2) {
   const loadingTask = pdfjsLib.getDocument({ data: buffer });
   const pdf = await loadingTask.promise;
@@ -73,28 +100,14 @@ async function rasterizePdfToPNGs(buffer, scale = 2) {
   return out;
 }
 
-
-
-async function extractTextWithPdfjs(buffer, rid='-') {
-  const loadingTask = pdfjsLib.getDocument({ data: buffer });
-  const pdf = await loadingTask.promise;
-  const pages = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const textContent = await page.getTextContent();
-    const text = textContent.items.map(it => it.str).join(' ').replace(/\s+/g,' ').trim();
-    pages.push(text);
-  }
-  const joined = pages.join('\n\n').trim();
-  if ((process.env.DEBUG_LOG || '0') !== '0') console.log(`[${rid}] pdfjs text extract: pages=${pages.length} chars=${joined.length}`);
-  return joined;
-}
+/** OCR locale con tesseract.js */
 async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
-  const label = `${rid}:OCR-locale`;
+  const label = `${rid}:OCR-local`;
   if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs})`);
   const images = await rasterizePdfToPNGs(buffer, 2);
   const parts = [];
   for (const { page, png } of images) {
+    // Nota: Tesseract.js usa worker interni; nessun upload esterno
     const res = await Tesseract.recognize(png, langs);
     const text = res?.data?.text || '';
     parts.push(cleanText(text));
@@ -105,47 +118,30 @@ async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
   return joined;
 }
 
-async function extractPdfText(buffer, rid='-') {
+/** Flusso principale: pdfjs testo → se vuoto → OCR */
+async function extractPdfText(buffer, rid = '-') {
   let txt = '';
   try {
     txt = await extractTextWithPdfjs(buffer, rid);
   } catch (e) {
-    if ((process.env.DEBUG_LOG || '0') !== '0') console.warn(`[${rid}] pdfjs text extract error:`, e?.message || e);
+    if (DEBUG) console.warn(`[${rid}] pdfjs text extract error:`, e?.message || e);
   }
   if (txt) return cleanText(txt);
-  console.log(`[${rid}] Nessun testo PDF estratto. Avvio OCR locale...`);
-  const ocr = await runLocalOCR(buffer, { rid });
-  return ocr;
-}
- catch (e) {
-    if (DEBUG) console.warn(`[${rid}] pdf-parse errore:`, e?.message || e);
-  }
-  if (txt) return txt;
-  // Fallback OCR locale
+
   console.log(`[${rid}] Nessun testo PDF estratto. Avvio OCR locale...`);
   const ocr = await runLocalOCR(buffer, { rid });
   return ocr;
 }
 
-// Generatore semplice di flashcard dal testo
-function buildFlashcards(text, n=8) {
-  const sents = text.split(/\n+|\.\s+/).map(s => s.trim()).filter(s => s.length > 20);
-  const pick = sents.slice(0, Math.min(n, sents.length));
-  return pick.map((s, i) => ({
-    id: i+1,
-    front: s.slice(0, 80) + (s.length>80 ? '…' : ''),
-    back: s,
-    difficulty: 'media',
-    tags: []
-  }));
-}
-
-// ---- App
+/* =========================
+   App & Routes
+   ========================= */
 const app = express();
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 
-pdfjsLib = await __loadPdfjs();
+// Carica pdfjs-dist una volta all’avvio
+pdfjsLib = await loadPdfjs();
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
 app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS }));
@@ -162,7 +158,18 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
   }
 });
 
-// Flashcards (usa estrazione + generazione semplice)
+// Flashcards (demo semplice locale: niente LLM)
+function buildFlashcards(text, n = 12) {
+  const sents = text.split(/\n+|\. +/).map(s => s.trim()).filter(s => s.length > 20);
+  const pick = sents.slice(0, Math.min(n, sents.length));
+  return pick.map((s, i) => ({
+    id: i + 1,
+    front: s.slice(0, 80) + (s.length > 80 ? '…' : ''),
+    back: s,
+    difficulty: 'media',
+    tags: [],
+  }));
+}
 app.post('/api/flashcards', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'Nessun file caricato (campo "file")' });
