@@ -34,10 +34,10 @@ const corsOptions = {
 /* =========================
    Upload (PDF fino a 30MB)
    ========================= */
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB
-});
+// NOTA: usiamo .any() per evitare "Unexpected field" se il frontend usa nomi diversi
+const storage = multer.memoryStorage();
+const limits = { fileSize: 30 * 1024 * 1024 }; // 30 MB
+const uploadAny = multer({ storage, limits }).any();
 
 /* =========================
    Loader dinamico pdfjs-dist
@@ -73,6 +73,17 @@ function cleanText(s) {
     .replace(/\s+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+// Trova il primo file PDF valido tra req.files (multer.any())
+function pickPdfFile(req) {
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length) return null;
+  // preferisci application/pdf; in fallback usa estensione .pdf
+  const byMime = files.find(f => (f.mimetype || '').toLowerCase() === 'application/pdf');
+  if (byMime) return byMime;
+  const byExt = files.find(f => (f.originalname || '').toLowerCase().endsWith('.pdf'));
+  return byExt || null;
 }
 
 /** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) */
@@ -156,19 +167,31 @@ pdfjsLib = await loadPdfjs();
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
 app.get('/api/info', (_req, res) => res.json({ ok: true, ocr: 'local', langs: OCR_LANGS }));
 
-// Estrazione pura
-app.post('/api/extract', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok: false, error: 'Nessun file caricato (campo "file")' });
+// Estrazione pura (accetta qualsiasi nome di campo)
+app.post('/api/extract', (req, res) => {
+  uploadAny(req, res, async (err) => {
     const rid = req.headers['x-request-id'] || Math.random().toString(36).slice(2);
-    const text = await extractPdfText(req.file.buffer, rid);
-    res.json({ ok: true, chars: text.length, text });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
+    if (err) {
+      // Errori Multer (size, unexpected field, etc.)
+      const code = err.code || 'UPLOAD_ERROR';
+      const msg = err.message || String(err);
+      if (DEBUG) console.warn(`[${rid}] Multer error:`, code, msg);
+      return res.status(400).json({ ok: false, error: `Upload fallito (${code}): ${msg}` });
+    }
+    const file = pickPdfFile(req);
+    if (!file) {
+      return res.status(400).json({ ok: false, error: 'Nessun PDF trovato nel multipart (usa campo "file" o invia un .pdf)' });
+    }
+    try {
+      const text = await extractPdfText(file.buffer, rid);
+      res.json({ ok: true, chars: text.length, text });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
 });
 
-// Flashcards (demo locale semplice)
+// Flashcards (demo locale semplice; accetta qualsiasi nome di campo)
 function buildFlashcards(text, n = 12) {
   const sents = text.split(/\n+|\. +/).map(s => s.trim()).filter(s => s.length > 20);
   const pick = sents.slice(0, Math.min(n, sents.length));
@@ -180,16 +203,27 @@ function buildFlashcards(text, n = 12) {
     tags: [],
   }));
 }
-app.post('/api/flashcards', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok: false, error: 'Nessun file caricato (campo "file")' });
+app.post('/api/flashcards', (req, res) => {
+  uploadAny(req, res, async (err) => {
     const rid = req.headers['x-request-id'] || Math.random().toString(36).slice(2);
-    const text = await extractPdfText(req.file.buffer, rid);
-    const cards = buildFlashcards(text, 12);
-    res.json({ ok: true, count: cards.length, cards });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
+    if (err) {
+      const code = err.code || 'UPLOAD_ERROR';
+      const msg = err.message || String(err);
+      if (DEBUG) console.warn(`[${rid}] Multer error:`, code, msg);
+      return res.status(400).json({ ok: false, error: `Upload fallito (${code}): ${msg}` });
+    }
+    const file = pickPdfFile(req);
+    if (!file) {
+      return res.status(400).json({ ok: false, error: 'Nessun PDF trovato nel multipart (usa campo "file" o invia un .pdf)' });
+    }
+    try {
+      const text = await extractPdfText(file.buffer, rid);
+      const cards = buildFlashcards(text, 12);
+      res.json({ ok: true, count: cards.length, cards });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
 });
 
 // Avvio
