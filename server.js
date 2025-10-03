@@ -201,7 +201,7 @@ async function askOpenAI_JSON(system, user, temperature=0.3, opts={}) {
   const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
   const rid = globalThis.__currentRid || '-';
-  const attemptsCfg = parseInt(process.env.OPENAI_JSON_ATTEMPTS || '2', 10);
+  const attemptsCfg = parseInt(process.env.OPENAI_JSON_ATTEMPTS || '5', 10);
   const attempts = Math.max(1, parseInt(opts.attempts || attemptsCfg || 2, 10));
   const schema = opts.schema || null;
   const schemaName = opts.schemaName || 'response';
@@ -252,7 +252,12 @@ async function askOpenAI_JSON(system, user, temperature=0.3, opts={}) {
           txt = content;
         }
         if (!txt && usedNativeJson) throw new Error('Risposta OpenAI senza JSON');
-        return safeJSON(txt);
+        try {
+          return safeJSON(txt);
+        } catch (parseErr) {
+          if (DEBUG_LOG) console.warn(`[${rid}] safeJSON failed: ${parseErr.message}. Snippet: ${txt.slice(0,180)}...`);
+          throw parseErr;
+        }
       } catch (err) {
         lastErr = err;
         if (DEBUG_LOG) console.warn(`[${rid}] askOpenAI_JSON attempt ${attempt} failed: ${err.message}`);
