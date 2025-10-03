@@ -97,9 +97,12 @@ const openai = HAS_OPENAI ? new OpenAI(clientOpts) : null;
 // Log config effettiva per debug (senza segreti)
 const MODEL_CFG = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const MAX_TOKENS_CFG = parseInt(process.env.OPENAI_MAX_TOKENS || process.env.OPENAI_MAX_OUTPUT_TOKENS || '800', 10);
+const OCR_ENABLED = process.env.OCR_ENABLE ? process.env.OCR_ENABLE !== '0' : true;
+const OCR_MODEL_CFG = process.env.OPENAI_OCR_MODEL || MODEL_CFG;
+const OCR_MAX_OUTPUT_TOKENS = parseInt(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS || '2000', 10);
 const KEY_TYPE = apiKey.startsWith('sk-proj-') ? 'project' : (apiKey.startsWith('sk-') ? 'user' : (apiKey ? 'unknown' : 'none'));
 const KEY_LEN = apiKey.length;
-console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI} keyType=${KEY_TYPE} keyLen=${KEY_LEN} project=${process.env.OPENAI_PROJECT? 'set':''} baseURL=${process.env.OPENAI_BASE_URL? 'set':''}`);
+console.log(`[studytool] OpenAI model=${MODEL_CFG} max_tokens=${MAX_TOKENS_CFG} rpm=${OPENAI_RPM} concurrency=${OPENAI_CONCURRENCY} hasOpenAI=${HAS_OPENAI} keyType=${KEY_TYPE} keyLen=${KEY_LEN} project=${process.env.OPENAI_PROJECT? 'set':''} baseURL=${process.env.OPENAI_BASE_URL? 'set':''} ocrEnabled=${OCR_ENABLED} ocrModel=${OCR_MODEL_CFG}`);
 
 /* =============================================================
    AUTH OPZIONALE PER LE ROTTE /api/* (eccetto /api/ping)
@@ -120,6 +123,27 @@ function cleanText(t) {
   return t.replace(/\r/g, ' ').replace(/\n/g, ' ').replace(/\t/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function collectResponseText(resp) {
+  if (!resp) return '';
+  if (Array.isArray(resp.output_text) && resp.output_text.length) {
+    return resp.output_text.join('\n');
+  }
+  const out = [];
+  const items = Array.isArray(resp.output) ? resp.output : [];
+  for (const item of items) {
+    if (item?.type === 'message' && Array.isArray(item.content)) {
+      for (const chunk of item.content) {
+        if (chunk?.type === 'output_text' && typeof chunk.text === 'string') {
+          out.push(chunk.text);
+        }
+      }
+    } else if (item?.type === 'output_text' && typeof item.text === 'string') {
+      out.push(item.text);
+    }
+  }
+  return out.join('\n');
+}
+
 function chunkText(txt, max = 8000) {
   // Semplice chunking per lunghi PDF
   const chunks = [];
@@ -129,6 +153,57 @@ function chunkText(txt, max = 8000) {
     i += max;
   }
   return chunks;
+}
+
+async function runPdfOCR(buffer, rid = '-') {
+  if (!OCR_ENABLED) throw new Error('OCR disabilitato');
+  if (!HAS_OPENAI) throw new Error('OCR non disponibile: OPENAI non configurato');
+  const label = `${rid}:OCR`;
+  const model = OCR_MODEL_CFG;
+  console.log(`[${label}] fallback OCR attivo con modello ${model}`);
+  const upload = await OpenAI.toFile(buffer, 'upload.pdf');
+  const file = await runQueued(async () => {
+    await throttleRPM();
+    return await withRetries(() => openai.files.create({
+      file: upload,
+      purpose: 'assistants'
+    }));
+  });
+  try {
+    const response = await runQueued(async () => {
+      await throttleRPM();
+      return await withRetries(() => openai.responses.create({
+        model,
+        temperature: 0,
+        max_output_tokens: OCR_MAX_OUTPUT_TOKENS,
+        input: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'Sei un motore OCR. Leggi il PDF allegato ed estrai esclusivamente il testo leggibile pagina per pagina, mantenendo l\'ordine di lettura. Restituisci solo testo puro, usando una riga vuota tra le pagine.'
+              },
+              {
+                type: 'input_file',
+                file_id: file.id
+              }
+            ]
+          }
+        ]
+      }));
+    });
+    const raw = collectResponseText(response);
+    const cleaned = cleanText(raw).trim();
+    if (!cleaned) throw new Error('OCR completato ma testo vuoto');
+    console.log(`[${label}] OCR completato. Caratteri estratti=${cleaned.length}`);
+    return cleaned.slice(0, MAX_INPUT_CHARS);
+  } finally {
+    await runQueued(async () => {
+      try { await openai.files.del(file.id); }
+      catch (err) { if (DEBUG_LOG) console.warn(`[${label}] cleanup file OCR fallito:`, err?.message || err); }
+    });
+  }
 }
 
 function safeJSON(s) {
@@ -427,8 +502,22 @@ app.get('/api/debug/openai', async (req,res)=>{
 async function extractPdfTextFromReq(req) {
   if (!req.file) throw new Error("PDF mancante (campo 'pdf')");
   const buffer = req.file.buffer;
-  const data = await pdfParse(buffer);
-  const txt = (data.text || '').replace(/\s+/g, ' ').trim();
+  let txt = '';
+  try {
+    const data = await pdfParse(buffer);
+    txt = (data.text || '').replace(/\s+/g, ' ').trim();
+  } catch (err) {
+    console.warn(`[${req._rid||'-'}] Errore pdf-parse: ${err?.message || err}`);
+  }
+  if (!txt) {
+    console.log(`[${req._rid||'-'}] Nessun testo PDF estratto. Avvio fallback OCR...`);
+    try {
+      txt = await runPdfOCR(buffer, req._rid || '-');
+    } catch (ocrErr) {
+      const reason = ocrErr?.message || String(ocrErr);
+      throw new Error(`Impossibile estrarre testo dal PDF (OCR fallito: ${reason})`);
+    }
+  }
   if (!txt) throw new Error("Impossibile estrarre testo dal PDF");
   return txt.slice(0, MAX_INPUT_CHARS);
 }
