@@ -12,7 +12,7 @@ import Tesseract from 'tesseract.js';
    ========================= */
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
-const OCR_LANGS = process.env.OCR_LANGS || 'eng';      // es: "eng" oppure "eng+ita"
+const OCR_LANGS = process.env.OCR_LANGS || 'eng';           // es: "eng" oppure "eng+ita"
 const OCR_SCALE = parseFloat(process.env.OCR_SCALE || '2'); // scala raster (2 = qualità buona)
 
 // Comma-separated allowlist (es: https://tuo-sito.example,https://foo.bar)
@@ -78,18 +78,32 @@ function cleanText(s) {
     .trim();
 }
 
-// Converte Buffer/ArrayBuffer → Uint8Array per pdfjs (no Buffer!)
-function toUint8(buf) {
-  // 1) Node Buffer -> crea sempre una vista Uint8Array "pura"
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(buf)) {
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+/**
+ * Converte QUALSIASI input (Buffer/ArrayBuffer/Uint8Array/DataView/ArrayLike)
+ * in una Uint8Array **CLONATA** (no viste → niente detach).
+ */
+function toUint8Clone(input) {
+  // Buffer Node → copia byte a byte
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(input)) {
+    const out = new Uint8Array(input.length);
+    out.set(input); // copia
+    return out;
   }
-  // 2) Già Uint8Array (ma non Buffer)
-  if (buf instanceof Uint8Array) return buf;
-  // 3) ArrayBuffer
-  if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
-  // 4) Fallback: prova a costruire una vista
-  return new Uint8Array(buf);
+  // Uint8Array → copia (slice 0 clona)
+  if (input instanceof Uint8Array) {
+    return input.slice(0);
+  }
+  // ArrayBuffer → copia (slice clona)
+  if (input instanceof ArrayBuffer) {
+    return new Uint8Array(input.slice(0));
+  }
+  // DataView o altre TypedArray → copia porzione
+  if (ArrayBuffer.isView(input)) {
+    const { buffer, byteOffset, byteLength } = input;
+    return new Uint8Array(buffer.slice(byteOffset, byteOffset + byteLength));
+  }
+  // Fallback: prova a costruire da array-like / iterable (copia implicita)
+  return Uint8Array.from(input);
 }
 
 // Trova il primo file PDF valido tra req.files (multer.any())
@@ -102,10 +116,9 @@ function pickPdfFile(req) {
   return byExt || null;
 }
 
-/** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) */
-async function extractTextWithPdfjs(buffer, rid = '-') {
-  const data = toUint8(buffer);
-  const loadingTask = pdfjsLib.getDocument({ data });
+/** Estrazione testo nativa con pdfjs-dist (senza pdf-parse) — accetta Uint8Array */
+async function extractTextWithPdfjs(dataU8, rid = '-') {
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8 });
   const pdf = await loadingTask.promise;
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -119,10 +132,9 @@ async function extractTextWithPdfjs(buffer, rid = '-') {
   return joined;
 }
 
-/** Rasterizza le pagine → PNG in memoria */
-async function rasterizePdfToPNGs(buffer, scale = OCR_SCALE) {
-  const data = toUint8(buffer);
-  const loadingTask = pdfjsLib.getDocument({ data });
+/** Rasterizza le pagine → PNG in memoria — accetta Uint8Array */
+async function rasterizePdfToPNGs(dataU8, scale = OCR_SCALE) {
+  const loadingTask = pdfjsLib.getDocument({ data: dataU8 });
   const pdf = await loadingTask.promise;
   const out = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -138,11 +150,11 @@ async function rasterizePdfToPNGs(buffer, scale = OCR_SCALE) {
   return out;
 }
 
-/** OCR locale con tesseract.js (fallback con retry lingua 'eng') */
-async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
+/** OCR locale con tesseract.js (fallback con retry lingua 'eng') — accetta Uint8Array */
+async function runLocalOCR(dataU8, { langs = OCR_LANGS, rid = '-' } = {}) {
   const label = `${rid}:OCR-local`;
   if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs}, scale=${OCR_SCALE})`);
-  const images = await rasterizePdfToPNGs(buffer, OCR_SCALE);
+  const images = await rasterizePdfToPNGs(dataU8, OCR_SCALE);
   const parts = [];
   for (const { png } of images) {
     try {
@@ -165,16 +177,19 @@ async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
 
 /** Flusso principale: pdfjs testo → se vuoto → OCR */
 async function extractPdfText(buffer, rid = '-') {
+  // 🔒 Clona SUBITO il buffer in Uint8Array, una volta sola
+  const dataU8 = toUint8Clone(buffer);
+
   let txt = '';
   try {
-    txt = await extractTextWithPdfjs(buffer, rid);
+    txt = await extractTextWithPdfjs(dataU8, rid);
   } catch (e) {
     if (DEBUG) console.warn(`[${rid}] pdfjs text extract error:`, e?.message || e);
   }
   if (txt) return cleanText(txt);
 
   console.log(`[${rid}] Nessun testo PDF estratto. Avvio OCR locale...`);
-  const ocr = await runLocalOCR(buffer, { rid });
+  const ocr = await runLocalOCR(dataU8, { rid });
   return ocr;
 }
 
