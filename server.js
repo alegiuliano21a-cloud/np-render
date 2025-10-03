@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import pdfParse from 'pdf-parse';
 
 // OCR locale
 import { createCanvas } from 'canvas';
@@ -74,6 +73,22 @@ async function rasterizePdfToPNGs(buffer, scale = 2) {
   return out;
 }
 
+
+
+async function extractTextWithPdfjs(buffer, rid='-') {
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const textContent = await page.getTextContent();
+    const text = textContent.items.map(it => it.str).join(' ').replace(/\s+/g,' ').trim();
+    pages.push(text);
+  }
+  const joined = pages.join('\n\n').trim();
+  if ((process.env.DEBUG_LOG || '0') !== '0') console.log(`[${rid}] pdfjs text extract: pages=${pages.length} chars=${joined.length}`);
+  return joined;
+}
 async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
   const label = `${rid}:OCR-locale`;
   if (DEBUG) console.log(`[${label}] Avvio OCR locale (langs=${langs})`);
@@ -90,12 +105,19 @@ async function runLocalOCR(buffer, { langs = OCR_LANGS, rid = '-' } = {}) {
   return joined;
 }
 
-async function extractPdfText(buffer, rid = '-') {
+async function extractPdfText(buffer, rid='-') {
   let txt = '';
   try {
-    const data = await pdfParse(buffer);
-    txt = cleanText(data.text || '');
+    txt = await extractTextWithPdfjs(buffer, rid);
   } catch (e) {
+    if ((process.env.DEBUG_LOG || '0') !== '0') console.warn(`[${rid}] pdfjs text extract error:`, e?.message || e);
+  }
+  if (txt) return cleanText(txt);
+  console.log(`[${rid}] Nessun testo PDF estratto. Avvio OCR locale...`);
+  const ocr = await runLocalOCR(buffer, { rid });
+  return ocr;
+}
+ catch (e) {
     if (DEBUG) console.warn(`[${rid}] pdf-parse errore:`, e?.message || e);
   }
   if (txt) return txt;
