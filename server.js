@@ -6,7 +6,6 @@ import pdfParse from 'pdf-parse';
 
 // Local OCR stack
 import { createCanvas } from 'canvas';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import Tesseract from 'tesseract.js';
 
 // ---- ENV
@@ -14,6 +13,29 @@ const PORT = parseInt(process.env.PORT || '8787', 10);
 const DEBUG = (process.env.DEBUG_LOG || '0') !== '0';
 const OCR_ENABLE = (process.env.OCR_ENABLE ?? '1') !== '0';
 const OCR_LANGS = process.env.OCR_LANGS || 'eng';
+
+// Dynamically resolve pdfjs-dist (package structure differs by version)
+let pdfjsLib;
+async function __loadPdfjs() {
+  const tries = [
+    'pdfjs-dist/legacy/build/pdf.mjs',
+    'pdfjs-dist/build/pdf.mjs',
+    'pdfjs-dist'
+  ];
+  let lastErr;
+  for (const spec of tries) {
+    try {
+      const mod = await import(spec);
+      if (process.env.DEBUG_LOG) console.log(`[pdfjs] loaded: ${spec}`);
+      return mod;
+    } catch (e) {
+      lastErr = e;
+      if (process.env.DEBUG_LOG) console.warn(`[pdfjs] failed ${spec}: ${e?.message||e}`);
+    }
+  }
+  throw new Error(`Impossibile caricare pdfjs-dist: ${lastErr?.message||lastErr}`);
+}
+
 
 // CORS allowlist
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -33,6 +55,8 @@ const upload = multer({
 });
 
 const app = express();
+const pdfjsLib = await __loadPdfjs();
+
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.get('/api/ping', (_req, res) => res.json({ ok: true, pong: true }));
