@@ -178,6 +178,10 @@
           <h3>Carica PDF & Genera</h3>
           <div class="col">
             <input type="file" id="pdfInput" accept="application/pdf"/>
+            <div class="row">
+              <input type="number" id="pageStartSection" min="1" placeholder="Pagina iniziale" style="max-width:120px" />
+              <input type="number" id="pageEndSection" min="1" placeholder="Pagina finale" style="max-width:120px" />
+            </div>
             <div id="optionsArea"></div>
             <div class="row">
               <button id="genBtn">Genera</button>
@@ -484,6 +488,11 @@ async function doGenerate(){
   const fd = new FormData();
   fd.append('pdf', f);
   fd.append('subject', CURRENT_SUBJECT);
+  // Aggiungi parametri pagine se presenti
+  const pageStart = document.getElementById('pageStartSection').value;
+  const pageEnd = document.getElementById('pageEndSection').value;
+  if (pageStart) fd.append('pageStart', pageStart);
+  if (pageEnd) fd.append('pageEnd', pageEnd);
   if (CURRENT_SECTION==='riassunti') {
     fd.append('length', document.getElementById('opt_length').value);
   } else {
