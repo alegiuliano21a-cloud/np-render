@@ -67,17 +67,6 @@
 </head>
 <body>
 <div class="app" role="application" aria-label="StudyTool">
-  <form id="pdfForm" enctype="multipart/form-data" style="margin-bottom:24px">
-    <div class="card">
-      <h2>Carica PDF e seleziona pagine</h2>
-      <div class="row">
-        <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
-        <input type="number" id="pageStart" name="pageStart" min="1" placeholder="Pagina iniziale" style="max-width:120px" />
-        <input type="number" id="pageEnd" name="pageEnd" min="1" placeholder="Pagina finale" style="max-width:120px" />
-        <button type="submit">Estrai</button>
-      </div>
-    </div>
-  </form>
   <!-- Toast -->
   <div id="toast" class="toast" style="display:none">
     <div class="notice">
