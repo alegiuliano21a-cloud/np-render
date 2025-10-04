@@ -167,10 +167,6 @@
           <h3>Carica PDF & Genera</h3>
           <div class="col">
             <input type="file" id="pdfInput" accept="application/pdf"/>
-            <div class="row">
-              <input type="number" id="pageStartSection" min="1" placeholder="Pagina iniziale" style="max-width:120px" />
-              <input type="number" id="pageEndSection" min="1" placeholder="Pagina finale" style="max-width:120px" />
-            </div>
             <div id="optionsArea"></div>
             <div class="row">
               <button id="genBtn">Genera</button>
@@ -247,45 +243,11 @@
 
 <!-- Config backend per deploy su Render -->
 <script>
-document.getElementById('pdfForm').onsubmit = async function(ev) {
-  ev.preventDefault();
-  const fileInput = document.getElementById('pdfFile');
-  const pageStart = document.getElementById('pageStart').value;
-  const pageEnd = document.getElementById('pageEnd').value;
-  if (!fileInput.files.length) {
-    toast('Seleziona un file PDF.');
-    return;
-  }
-  const formData = new FormData();
-  formData.append('file', fileInput.files[0]);
-  if (pageStart) formData.append('pageStart', pageStart);
-  if (pageEnd) formData.append('pageEnd', pageEnd);
-  overlay(true);
-  try {
-    const res = await fetch(API_BASE + '/api/extract', {
-      method: 'POST',
-      body: formData,
-      headers: API_KEY ? { 'x-api-key': API_KEY } : undefined
-    });
-    const data = await res.json();
-    overlay(false);
-    if (data.ok) {
-      toast('Estrazione completata! Caratteri: ' + data.chars);
-      // Mostra il testo estratto (puoi personalizzare)
-      alert(data.text.slice(0, 2000));
-    } else {
-      toast('Errore: ' + (data.error || 'Estrazione fallita'));
-    }
-  } catch (e) {
-    overlay(false);
-    toast('Errore di rete: ' + e.message);
-  }
-};
 // Imposta prima la base API per Render (poi viene letta da API_BASE)
 window.ST_API_BASE = window.ST_API_BASE || 'https://np-render.onrender.com';
 
 // ====== DEBUG/CONFIG ======
-window.API_BASE = window.ST_API_BASE || 'https://np-render.onrender.com';
+const API_BASE = (window.ST_API_BASE || 'http://localhost:8787');
 const API_KEY = window.ST_API_KEY || '';
 function formatMMSS(sec){ const mm=Math.floor(sec/60), ss=sec%60; return mm+":"+(ss<10?("0"+ss):ss); }
 function estimateWaitSecondsFromFile(f){
@@ -298,11 +260,11 @@ function estimateWaitSecondsFromFile(f){
   const span = maxMB - minMB;
   return Math.round((clamped/span) * MAX_S);
 }
-console.log('ST DEBUG: API_BASE =', window.API_BASE);
+console.log('ST DEBUG: API_BASE =', API_BASE);
 if (API_KEY) console.log('ST DEBUG: ST_API_KEY presente: invierò header x-api-key');
 (function ping(){
   const headers = API_KEY ? { 'x-api-key': API_KEY } : {};
-  fetch(window.API_BASE + '/api/ping', { headers })
+  fetch(API_BASE + '/api/ping', { headers })
     .then(r => { console.log('ST DEBUG: /api/ping status', r.status); return r.json().catch(e=>{console.error('ST DEBUG: /api/ping JSON parse error', e); return null;}); })
     .then(js => {
       console.log('ST DEBUG: /api/ping body', js);
@@ -384,7 +346,7 @@ document.getElementById('goHome').onclick = ()=>{ CURRENT_SUBJECT=null; updateSu
 document.getElementById('showInfo').onclick = async ()=>{
   try{
     const headers = API_KEY ? { 'x-api-key': API_KEY } : {};
-  const r = await fetch(window.API_BASE + '/api/info', { headers });
+    const r = await fetch(API_BASE + '/api/info', { headers });
     const js = await r.json().catch(()=>null);
     if(!js || !js.ok){
       toast('Impossibile leggere info backend. ' + (r.status===401 ? 'Autenticazione richiesta: imposta window.ST_API_KEY' : ''));
@@ -429,8 +391,17 @@ updateSubtitle();
    ============================================================= */
 function renderOptions(){
   const div = document.getElementById('optionsArea');
+  // Campo intervallo pagine, sempre presente nelle sezioni PDF
+  const pageRange = `
+    <label>Intervallo pagine
+      <input id="opt_page_from" type="number" min="1" placeholder="Da" style="width:60px"/>
+      <span style="margin:0 4px">–</span>
+      <input id="opt_page_to" type="number" min="1" placeholder="A" style="width:60px"/>
+    </label>
+  `;
   if (CURRENT_SECTION === 'riassunti') {
     div.innerHTML = `
+      ${pageRange}
       <label> Lunghezza
         <select id="opt_length">
           <option value="breve">breve</option>
@@ -441,6 +412,7 @@ function renderOptions(){
     `;
   } else if (CURRENT_SECTION === 'flashcards') {
     div.innerHTML = `
+      ${pageRange}
       <label> Difficoltà
         <select id="opt_diff">
           <option value="facile">facile</option>
@@ -454,6 +426,7 @@ function renderOptions(){
     `;
   } else {
     div.innerHTML = `
+      ${pageRange}
       <label> Difficoltà
         <select id="opt_diff">
           <option value="facile">facile</option>
@@ -477,18 +450,20 @@ async function doGenerate(){
   const fd = new FormData();
   fd.append('pdf', f);
   fd.append('subject', CURRENT_SUBJECT);
-  // Aggiungi parametri pagine se presenti
-  const pageStart = document.getElementById('pageStartSection').value;
-  const pageEnd = document.getElementById('pageEndSection').value;
-  if (pageStart) fd.append('pageStart', pageStart);
-  if (pageEnd) fd.append('pageEnd', pageEnd);
+  // Intervallo pagine
+  const pageFrom = document.getElementById('opt_page_from').value;
+  const pageTo = document.getElementById('opt_page_to').value;
+  if (pageFrom && pageTo) {
+    fd.append('page_from', pageFrom);
+    fd.append('page_to', pageTo);
+  }
   if (CURRENT_SECTION==='riassunti') {
     fd.append('length', document.getElementById('opt_length').value);
   } else {
     fd.append('difficulty', document.getElementById('opt_diff').value);
     fd.append('num', document.getElementById('opt_num').value);
   }
-  console.log('ST DEBUG: doGenerate', { section: CURRENT_SECTION, subject: CURRENT_SUBJECT, file: f && f.name, size: f && f.size, apiBase: window.API_BASE });
+  console.log('ST DEBUG: doGenerate', { section: CURRENT_SECTION, subject: CURRENT_SUBJECT, file: f && f.name, size: f && f.size, apiBase: API_BASE });
   overlay(true);
   // Stima attesa e barra completamento
   const estSec = estimateWaitSecondsFromFile(f);
@@ -516,8 +491,8 @@ async function doGenerate(){
     estBox.style.display = 'none';
   }
   try{
-  const base = window.API_BASE;
-  const url = CURRENT_SECTION==='riassunti' ? base + '/api/summary' : (CURRENT_SECTION==='flashcards' ? base + '/api/flashcards' : base + '/api/quiz');
+    const base = API_BASE;
+    const url = CURRENT_SECTION==='riassunti' ? base + '/api/summary' : (CURRENT_SECTION==='flashcards' ? base + '/api/flashcards' : base + '/api/quiz');
     const headers = API_KEY ? { 'x-api-key': API_KEY } : undefined;
     console.log('ST DEBUG: POST', url);
     const res = await fetch(url, { method:'POST', body: fd, headers });

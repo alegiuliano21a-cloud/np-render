@@ -503,9 +503,19 @@ async function extractPdfTextFromReq(req) {
   if (!req.file) throw new Error("PDF mancante (campo 'pdf')");
   const buffer = req.file.buffer;
   let txt = '';
+  let pageFrom = parseInt(req.body.page_from, 10);
+  let pageTo = parseInt(req.body.page_to, 10);
   try {
     const data = await pdfParse(buffer);
-    txt = (data.text || '').replace(/\s+/g, ' ').trim();
+    // Seleziona solo le pagine richieste se specificate
+    if (data.numpages && pageFrom && pageTo && pageFrom <= pageTo && pageFrom >= 1 && pageTo <= data.numpages) {
+      // pdf-parse fornisce solo il testo completo, ma possiamo provare a splittare per pagina
+      const pages = (data.text || '').split(/\f|\n\s*\n/); // \f = form feed, usato da pdf-parse per separare pagine
+      const selected = pages.slice(pageFrom - 1, pageTo);
+      txt = selected.join(' ').replace(/\s+/g, ' ').trim();
+    } else {
+      txt = (data.text || '').replace(/\s+/g, ' ').trim();
+    }
   } catch (err) {
     console.warn(`[${req._rid||'-'}] Errore pdf-parse: ${err?.message || err}`);
   }
@@ -513,6 +523,12 @@ async function extractPdfTextFromReq(req) {
     console.log(`[${req._rid||'-'}] Nessun testo PDF estratto. Avvio fallback OCR...`);
     try {
       txt = await runPdfOCR(buffer, req._rid || '-');
+      // OCR: tentativo di split per pagine se richiesto
+      if (pageFrom && pageTo && pageFrom <= pageTo) {
+        const ocrPages = txt.split(/\n\s*\n/);
+        const selected = ocrPages.slice(pageFrom - 1, pageTo);
+        txt = selected.join(' ').replace(/\s+/g, ' ').trim();
+      }
     } catch (ocrErr) {
       const reason = ocrErr?.message || String(ocrErr);
       throw new Error(`Impossibile estrarre testo dal PDF (OCR fallito: ${reason})`);
