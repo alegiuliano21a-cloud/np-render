@@ -507,14 +507,15 @@ async function extractPdfTextFromReq(req) {
   let pageTo = parseInt(req.body.page_to, 10);
   try {
     const data = await pdfParse(buffer);
-    // Seleziona solo le pagine richieste se specificate
     if (data.numpages && pageFrom && pageTo && pageFrom <= pageTo && pageFrom >= 1 && pageTo <= data.numpages) {
-      // pdf-parse fornisce solo il testo completo, ma possiamo provare a splittare per pagina
-      const pages = (data.text || '').split(/\f|\n\s*\n/); // \f = form feed, usato da pdf-parse per separare pagine
+      const pages = (data.text || '').split(/\f|\n\s*\n/);
       const selected = pages.slice(pageFrom - 1, pageTo);
       txt = selected.join(' ').replace(/\s+/g, ' ').trim();
+      console.log(`[${req._rid||'-'}] PDF: Elaboro solo pagine ${pageFrom}-${pageTo} su ${data.numpages}. Pagine selezionate: ${selected.length}`);
+      selected.forEach((p, i) => console.log(`[${req._rid||'-'}] Pagina ${pageFrom + i}: ${p.slice(0, 60).replace(/\s+/g, ' ')}...`));
     } else {
       txt = (data.text || '').replace(/\s+/g, ' ').trim();
+      console.log(`[${req._rid||'-'}] PDF: Nessun intervallo selezionato, elaboro tutto il PDF (${data.numpages || '?'} pagine)`);
     }
   } catch (err) {
     console.warn(`[${req._rid||'-'}] Errore pdf-parse: ${err?.message || err}`);
@@ -523,11 +524,14 @@ async function extractPdfTextFromReq(req) {
     console.log(`[${req._rid||'-'}] Nessun testo PDF estratto. Avvio fallback OCR...`);
     try {
       txt = await runPdfOCR(buffer, req._rid || '-');
-      // OCR: tentativo di split per pagine se richiesto
       if (pageFrom && pageTo && pageFrom <= pageTo) {
         const ocrPages = txt.split(/\n\s*\n/);
         const selected = ocrPages.slice(pageFrom - 1, pageTo);
         txt = selected.join(' ').replace(/\s+/g, ' ').trim();
+        console.log(`[${req._rid||'-'}] OCR: Elaboro solo pagine ${pageFrom}-${pageTo}. Pagine selezionate: ${selected.length}`);
+        selected.forEach((p, i) => console.log(`[${req._rid||'-'}] Pagina OCR ${pageFrom + i}: ${p.slice(0, 60).replace(/\s+/g, ' ')}...`));
+      } else {
+        console.log(`[${req._rid||'-'}] OCR: Nessun intervallo selezionato, elaboro tutto il PDF`);
       }
     } catch (ocrErr) {
       const reason = ocrErr?.message || String(ocrErr);
