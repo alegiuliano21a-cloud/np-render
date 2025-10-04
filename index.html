@@ -285,7 +285,8 @@ document.getElementById('pdfForm').onsubmit = async function(ev) {
 window.ST_API_BASE = window.ST_API_BASE || 'https://np-render.onrender.com';
 
 // ====== DEBUG/CONFIG ======
-const API_BASE = (window.ST_API_BASE || 'http://localhost:8787');
+window.API_BASE = window.ST_API_BASE || 'http://localhost:8787';
+const API_BASE = window.API_BASE;
 const API_KEY = window.ST_API_KEY || '';
 function formatMMSS(sec){ const mm=Math.floor(sec/60), ss=sec%60; return mm+":"+(ss<10?("0"+ss):ss); }
 function estimateWaitSecondsFromFile(f){
